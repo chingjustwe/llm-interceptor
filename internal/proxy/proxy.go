@@ -228,3 +228,48 @@ func (p *Proxy) HandleRequestStream(body []byte, headers map[string]string, w ht
 	}
 	return respBody, &usage, tools, stopReason, duration, nil
 }
+
+// InterceptBlockedTools checks a non-streaming LLM response body for tool_use
+// content blocks whose names match the isBlocked predicate. Matching blocks
+// are replaced with a text block saying the tool was blocked, and
+// stop_reason is changed from "tool_use" to "end_turn". Returns the
+// original body unchanged if no tools are blocked.
+func InterceptBlockedTools(body []byte, isBlocked func(name string) bool) []byte {
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return body
+	}
+	content, ok := raw["content"].([]any)
+	if !ok {
+		return body
+	}
+	blocked := false
+	for i, c := range content {
+		block, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		if block["type"] != "tool_use" {
+			continue
+		}
+		name, ok := block["name"].(string)
+		if !ok || !isBlocked(name) {
+			continue
+		}
+		content[i] = map[string]any{
+			"type": "text",
+			"text": fmt.Sprintf("Tool '%s' is blocked by interceptor policy. You cannot use this tool in this session.", name),
+		}
+		blocked = true
+	}
+	if !blocked {
+		return body
+	}
+	raw["content"] = content
+	raw["stop_reason"] = "end_turn"
+	modified, err := json.Marshal(raw)
+	if err != nil {
+		return body
+	}
+	return modified
+}

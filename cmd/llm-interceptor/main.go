@@ -329,42 +329,5 @@ func main() {
 // stop_reason is changed from "tool_use" to "end_turn". Returns the
 // original body unchanged if no tools are blocked.
 func interceptBlockedTools(body []byte, isBlocked func(name string) bool) []byte {
-	var raw map[string]any
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return body
-	}
-	content, ok := raw["content"].([]any)
-	if !ok {
-		return body
-	}
-	blocked := false
-	for i, c := range content {
-		block, ok := c.(map[string]any)
-		if !ok {
-			continue
-		}
-		if block["type"] != "tool_use" {
-			continue
-		}
-		name, ok := block["name"].(string)
-		if !ok || !isBlocked(name) {
-			continue
-		}
-		// Replace tool_use with a text block.
-		content[i] = map[string]any{
-			"type": "text",
-			"text": fmt.Sprintf("Tool '%s' is blocked by interceptor policy. You cannot use this tool in this session.", name),
-		}
-		blocked = true
-	}
-	if !blocked {
-		return body
-	}
-	raw["content"] = content
-	raw["stop_reason"] = "end_turn"
-	modified, err := json.Marshal(raw)
-	if err != nil {
-		return body
-	}
-	return modified
+	return proxy.InterceptBlockedTools(body, isBlocked)
 }

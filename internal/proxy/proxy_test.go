@@ -97,6 +97,128 @@ func TestProxy_StreamingResponse(t *testing.T) {
 	}
 }
 
+func TestE2E_StreamingToolBlock_RawOutput(t *testing.T) {
+	// End-to-end test: mock upstream Anthropic API → proxy → client.
+	// Prints raw SSE output so the user can inspect validitiy.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+
+		// Simulate Anthropic API: text block then tool_use.
+		fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"I will list the files using Bash.\"}}\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_abc123\",\"name\":\"Bash\",\"input\":{\"command\":\"ls -la\"}}}\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"command\\\": \\\"ls -la\\\"}\"}}\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":25,\"output_tokens\":42}}\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		flusher.Flush()
+	}))
+	defer upstream.Close()
+
+	target, err := New("e2e-test", upstream.URL)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	isToolBlocked := func(name string) bool { return name == "Bash" }
+
+	rec := httptest.NewRecorder()
+	respBody, usage, tools, stopReason, _, err := target.HandleRequestStream(
+		[]byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"list files"}],"stream":true}`),
+		map[string]string{"x-api-key": "test-key"},
+		rec,
+		isToolBlocked,
+	)
+	if err != nil {
+		t.Fatalf("HandleRequestStream failed: %v", err)
+	}
+
+	// Print the raw SSE output for visual inspection.
+	rawSSE := rec.Body.String()
+	t.Logf("=== RAW SSE OUTPUT ===\n%s", rawSSE)
+	t.Logf("=== RETURNED VALUES ===")
+	t.Logf("respBody:         %q", string(respBody))
+	t.Logf("stopReason:       %q", stopReason)
+	t.Logf("usage:            input=%d output=%d", usage.InputTokens, usage.OutputTokens)
+	t.Logf("toolCalls:        %d (should still contain the blocked tool for logging)", len(tools))
+	for i, tc := range tools {
+		t.Logf("  tool[%d]: name=%q", i, tc.Name)
+	}
+
+	// Validate: the SSE output is valid (no JSON parse errors from client side).
+	for _, line := range strings.Split(rawSSE, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "data: ") {
+			data := strings.TrimPrefix(trimmed, "data: ")
+			if !json.Valid([]byte(data)) {
+				t.Errorf("INVALID JSON in data line: %s", data)
+			}
+		}
+	}
+	// Validate: no tool_use in output, but blocked message present.
+	if strings.Contains(rawSSE, `"type":"tool_use"`) {
+		t.Error("FATAL: output still contains tool_use — client will get confused")
+	}
+	if !strings.Contains(rawSSE, "blocked by interceptor policy") {
+		t.Error("FATAL: output missing blocked message")
+	}
+	if !strings.Contains(rawSSE, `"stop_reason":"end_turn"`) {
+		t.Error("FATAL: output missing stop_reason end_turn")
+	}
+
+	// Also test the non-streaming path.
+	t.Run("non-streaming", func(t *testing.T) {
+		mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"id":      "msg_456",
+				"model":   "claude-sonnet-4-6",
+				"stop_reason": "tool_use",
+				"content": []map[string]any{
+					{"type": "text", "text": "I will list files."},
+					{"type": "tool_use", "id": "toolu_def456", "name": "Bash", "input": map[string]string{"command": "ls"}},
+				},
+				"usage": map[string]any{"input_tokens": 10, "output_tokens": 20},
+			})
+		}))
+		defer mock.Close()
+
+		target2, err := New("e2e-nonstream", mock.URL)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+		pr, err := target2.HandleRequest([]byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"ls"}]}`),
+			map[string]string{"x-api-key": "test-key"},
+		)
+		if err != nil {
+			t.Fatalf("HandleRequest failed: %v", err)
+		}
+		blocked := InterceptBlockedTools(pr.Body, func(name string) bool { return name == "Bash" })
+		t.Logf("=== NON-STREAMING BLOCKED RESPONSE ===\n%s", string(blocked))
+		if strings.Contains(string(blocked), `"type":"tool_use"`) {
+			t.Error("non-streaming: output still contains tool_use")
+		}
+		if !strings.Contains(string(blocked), "blocked by interceptor policy") {
+			t.Error("non-streaming: output missing blocked message")
+		}
+		if !strings.Contains(string(blocked), `"stop_reason":"end_turn"`) {
+			t.Error("non-streaming: output missing stop_reason end_turn")
+		}
+	})
+}
+
 func TestStreamAndCollect_BlocksToolUse(t *testing.T) {
 	tests := []struct {
 		name        string
