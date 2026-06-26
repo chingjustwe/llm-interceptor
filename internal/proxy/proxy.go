@@ -15,12 +15,7 @@ type PluginResponse struct {
 	Body       []byte
 	Headers    map[string]string
 	DurationMs int64
-	Usage      struct {
-		InputTokens         int
-		OutputTokens        int
-		CacheReadTokens     int
-		CacheCreationTokens int
-	}
+	Usage      UsageData
 }
 
 type ToolCall struct {
@@ -129,4 +124,48 @@ func ExtractUsage(body []byte) (UsageData, []ToolCall, string) {
 		}
 	}
 	return usage, toolCalls, stopReason
+}
+
+func (p *Proxy) HandleRequestStream(body []byte, headers map[string]string, w http.ResponseWriter) (*UsageData, []ToolCall, string, int64, error) {
+	start := time.Now()
+
+	req, err := http.NewRequest("POST", p.upstream+"/v1/messages", bytes.NewReader(body))
+	if err != nil {
+		return nil, nil, "", 0, err
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	if req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if req.Header.Get("Accept") == "" {
+		req.Header.Set("Accept", "text/event-stream")
+	}
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, nil, "", 0, err
+	}
+	defer resp.Body.Close()
+
+	for k, v := range resp.Header {
+		w.Header()[k] = v
+	}
+	w.WriteHeader(resp.StatusCode)
+
+	if resp.StatusCode != http.StatusOK {
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, nil, "", 0, fmt.Errorf("read error body: %w", err)
+		}
+		w.Write(body)
+		return nil, nil, "", time.Since(start).Milliseconds(), nil
+	}
+
+	usage, tools, stopReason, duration, err := streamAndCollect(resp, w)
+	if err != nil {
+		return nil, nil, "", duration, err
+	}
+	return &usage, tools, stopReason, duration, nil
 }
