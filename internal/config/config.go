@@ -15,6 +15,17 @@ type Config struct {
 	Log          LogConfig        `yaml:"log"`
 	Storage      StorageConfig    `yaml:"storage"`
 	StateStore   StateStoreConfig `yaml:"state_store"`
+	Plugins      PluginConfig     `yaml:"plugins"`
+}
+
+type PluginConfig struct {
+	OTelExporter OTelExporterConfig `yaml:"otel-exporter"`
+}
+
+type OTelExporterConfig struct {
+	Enabled  bool              `yaml:"enabled"`
+	Endpoint string            `yaml:"endpoint"`
+	Headers  map[string]string `yaml:"headers,omitempty"`
 }
 
 type LogConfig struct {
