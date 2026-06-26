@@ -181,7 +181,11 @@ func (p *Proxy) Forward(w http.ResponseWriter, r *http.Request) {
 // HandleRequestStream sends a streaming (SSE) request to the upstream provider,
 // relays Server-Sent Events directly to the caller, and collects aggregated usage
 // data, tool calls, stop reason, and response body from the event stream.
-func (p *Proxy) HandleRequestStream(body []byte, headers map[string]string, w http.ResponseWriter) ([]byte, *UsageData, []ToolCall, string, int64, error) {
+//
+// If isToolBlocked is non-nil, tool_use content blocks whose name returns true
+// are replaced with a text block saying the tool was blocked by policy, and the
+// stop_reason is overridden to "end_turn".
+func (p *Proxy) HandleRequestStream(body []byte, headers map[string]string, w http.ResponseWriter, isToolBlocked func(name string) bool) ([]byte, *UsageData, []ToolCall, string, int64, error) {
 	start := time.Now()
 
 	req, err := http.NewRequest("POST", p.upstream+"/v1/messages", bytes.NewReader(body))
@@ -218,7 +222,7 @@ func (p *Proxy) HandleRequestStream(body []byte, headers map[string]string, w ht
 		return body, nil, nil, "", time.Since(start).Milliseconds(), nil
 	}
 
-	respBody, usage, tools, stopReason, duration, err := streamAndCollect(resp, w)
+	respBody, usage, tools, stopReason, duration, err := streamAndCollect(resp, w, isToolBlocked)
 	if err != nil {
 		return nil, nil, nil, "", duration, err
 	}

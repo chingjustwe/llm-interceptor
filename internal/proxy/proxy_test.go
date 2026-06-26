@@ -74,6 +74,7 @@ func TestProxy_StreamingResponse(t *testing.T) {
 		[]byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"stream":true}`),
 		map[string]string{"x-api-key": "test-key"},
 		rec,
+		nil,
 	)
 	if string(respBody) != "Hello there" {
 		t.Fatalf("expected response body 'Hello there', got '%s'", string(respBody))

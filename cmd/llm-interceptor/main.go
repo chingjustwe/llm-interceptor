@@ -125,11 +125,13 @@ func main() {
 			cfg.Plugins.RateLimit.TokensPerMinute,
 		))
 	}
+	var toolPolicy *plugins.ToolPolicyPlugin
 	if len(cfg.Plugins.ToolPolicy.BlockedTools) > 0 || len(cfg.Plugins.ToolPolicy.AllowedTools) > 0 {
-		pluginList = append(pluginList, plugins.NewToolPolicyPlugin(
+		toolPolicy = plugins.NewToolPolicyPlugin(
 			cfg.Plugins.ToolPolicy.BlockedTools,
 			cfg.Plugins.ToolPolicy.AllowedTools,
-		))
+		)
+		pluginList = append(pluginList, toolPolicy)
 	}
 	disp := plugin.NewDispatcher(pluginList)
 
@@ -190,9 +192,6 @@ func main() {
 			http.Error(w, hookResult.Reason, hookResult.StatusCode)
 			return
 		}
-		// Use the body after plugins may have modified it (e.g. tool-policy
-		// stripping blocked tools from the tools array).
-		body = reqCtx.Body
 
 		var respCtx plugin.ResponseContext
 		respCtx.Context = r.Context()
@@ -207,8 +206,14 @@ func main() {
 			respCtx.Model = model.Model
 		}
 
+		// Build the tool blocking function for the proxy layer.
+		var isToolBlocked func(name string) bool
+		if toolPolicy != nil {
+			isToolBlocked = toolPolicy.IsBlocked
+		}
+
 		if isStream {
-			respBody, usage, toolCalls, stopReason, duration, err := target.HandleRequestStream(body, reqCtx.Headers, w)
+			respBody, usage, toolCalls, stopReason, duration, err := target.HandleRequestStream(body, reqCtx.Headers, w, isToolBlocked)
 			if err != nil {
 				log.Printf("proxy stream error: %v", err)
 				return
@@ -240,6 +245,12 @@ func main() {
 			respCtx.StopReason = stopReason
 			respCtx.Body = pr.Body
 
+			// Apply tool policy to the response body before writing to client.
+			bodyToWrite := pr.Body
+			if isToolBlocked != nil {
+				bodyToWrite = interceptBlockedTools(pr.Body, isToolBlocked)
+			}
+
 			for k, v := range pr.Headers {
 				w.Header().Set(k, v)
 			}
@@ -247,7 +258,7 @@ func main() {
 				w.Header().Set("Content-Type", "application/json")
 			}
 			w.WriteHeader(pr.StatusCode)
-			w.Write(pr.Body)
+			w.Write(bodyToWrite)
 		}
 
 		if err := disp.ExecuteOnResponse(&respCtx); err != nil {
@@ -310,4 +321,50 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("server error: %v", err)
 	}
+}
+
+// interceptBlockedTools checks a non-streaming LLM response body for tool_use
+// content blocks whose names match the isBlocked predicate. Matching blocks
+// are replaced with a text block saying the tool was blocked, and
+// stop_reason is changed from "tool_use" to "end_turn". Returns the
+// original body unchanged if no tools are blocked.
+func interceptBlockedTools(body []byte, isBlocked func(name string) bool) []byte {
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return body
+	}
+	content, ok := raw["content"].([]any)
+	if !ok {
+		return body
+	}
+	blocked := false
+	for i, c := range content {
+		block, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		if block["type"] != "tool_use" {
+			continue
+		}
+		name, ok := block["name"].(string)
+		if !ok || !isBlocked(name) {
+			continue
+		}
+		// Replace tool_use with a text block.
+		content[i] = map[string]any{
+			"type": "text",
+			"text": fmt.Sprintf("Tool '%s' is blocked by interceptor policy. You cannot use this tool in this session.", name),
+		}
+		blocked = true
+	}
+	if !blocked {
+		return body
+	}
+	raw["content"] = content
+	raw["stop_reason"] = "end_turn"
+	modified, err := json.Marshal(raw)
+	if err != nil {
+		return body
+	}
+	return modified
 }
