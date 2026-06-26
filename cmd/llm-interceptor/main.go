@@ -73,6 +73,16 @@ func main() {
 	case "memory":
 		st = state.NewMemory()
 		defer st.Close()
+	case "redis":
+		if cfg.StateStore.Redis == nil {
+			log.Fatalf("redis state store requires a 'redis' config block")
+		}
+		s, err := state.NewRedis(cfg.StateStore.Redis.URL)
+		if err != nil {
+			log.Fatalf("failed to init redis state: %v", err)
+		}
+		st = s
+		defer st.Close()
 	default:
 		log.Fatalf("unknown state store type: %s", cfg.StateStore.Type)
 	}
