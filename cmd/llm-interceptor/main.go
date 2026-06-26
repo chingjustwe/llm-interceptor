@@ -190,6 +190,9 @@ func main() {
 			http.Error(w, hookResult.Reason, hookResult.StatusCode)
 			return
 		}
+		// Use the body after plugins may have modified it (e.g. tool-policy
+		// stripping blocked tools from the tools array).
+		body = reqCtx.Body
 
 		var respCtx plugin.ResponseContext
 		respCtx.Context = r.Context()
