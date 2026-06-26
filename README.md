@@ -45,7 +45,7 @@
 
 ```bash
 # Clone
-git clone https://github.com/nightfield/llm-interceptor.git
+git clone https://github.com/chingjustwe/llm-Interceptor.git
 cd llm-interceptor
 
 # Build

@@ -234,7 +234,7 @@ import (
 	"fmt"
 
 	"golang.org/x/crypto/bcrypt"
-	"github.com/nightfield/llm-interceptor/internal/storage"
+	"github.com/chingjustwe/llm-Interceptor/internal/storage"
 )
 
 type KeyManager struct {
@@ -683,9 +683,9 @@ import (
 	"log"
 	"os"
 
-	"github.com/nightfield/llm-interceptor/internal/config"
-	"github.com/nightfield/llm-interceptor/internal/router"
-	"github.com/nightfield/llm-interceptor/internal/storage"
+	"github.com/chingjustwe/llm-Interceptor/internal/config"
+	"github.com/chingjustwe/llm-Interceptor/internal/router"
+	"github.com/chingjustwe/llm-Interceptor/internal/storage"
 )
 
 func main() {

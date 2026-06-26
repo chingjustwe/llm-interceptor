@@ -47,7 +47,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/nightfield/llm-interceptor/internal/plugin"
+	"github.com/chingjustwe/llm-Interceptor/internal/plugin"
 )
 
 func TestOTelExporter_Name(t *testing.T) {
@@ -100,7 +100,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/nightfield/llm-interceptor/internal/plugin"
+	"github.com/chingjustwe/llm-Interceptor/internal/plugin"
 )
 
 type OTelExporter struct {
@@ -343,7 +343,7 @@ if cfg.Plugins.OTelExporter.Enabled {
 disp := plugin.NewDispatcher(pluginList)
 ```
 
-Add import: `"github.com/nightfield/llm-interceptor/internal/plugins"`
+Add import: `"github.com/chingjustwe/llm-Interceptor/internal/plugins"`
 
 - [ ] **Step 3: Build and verify**
 

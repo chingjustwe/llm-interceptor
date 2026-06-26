@@ -6,7 +6,7 @@ governance (budget/rate-limit/tool-policy), LLM routing (multi-provider), and a 
 — all in a single Go binary.
 
 ## Repository
-- `github.com/nightfield/llm-interceptor`
+- `github.com/chingjustwe/llm-Interceptor`
 - Go 1.26.3, Node v24.16.0 (Phase 5)
 - Modules: `chi`, `yaml.v3`, `modernc.org/sqlite` + phase-specific deps
 

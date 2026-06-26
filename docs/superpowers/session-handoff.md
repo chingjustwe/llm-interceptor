@@ -41,7 +41,7 @@ docs/superpowers/
 |----------|--------|
 | **Language** | Go 1.22+ (switched from TypeScript/Bun) |
 | **OTel timing** | Moved from Phase 1 → Phase 2 as a native plugin |
-| **Module path** | `github.com/nightfield/llm-interceptor` |
+| **Module path** | `github.com/chingjustwe/llm-Interceptor` |
 | **Project dir** | `~/self/git/llm-interceptor/` |
 | **Phase 1 scope** | No plugins in core — plugin system ready but empty |
 | **API key routing** | Auto-detect mode by key prefix (`sk-lli-*` = router) |

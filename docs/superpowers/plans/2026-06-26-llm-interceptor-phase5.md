@@ -28,9 +28,9 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/nightfield/llm-interceptor/internal/router"
-	"github.com/nightfield/llm-interceptor/internal/storage"
-	"github.com/nightfield/llm-interceptor/internal/types"
+	"github.com/chingjustwe/llm-Interceptor/internal/router"
+	"github.com/chingjustwe/llm-Interceptor/internal/storage"
+	"github.com/chingjustwe/llm-Interceptor/internal/types"
 )
 
 type Handler struct {
@@ -246,7 +246,7 @@ func (b *SSEBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 Add to `cmd/llm-interceptor/main.go`:
 
 ```go
-import "github.com/nightfield/llm-interceptor/internal/api"
+import "github.com/chingjustwe/llm-Interceptor/internal/api"
 
 // After router setup:
 apiHandler := api.NewHandler(store, keyManager)

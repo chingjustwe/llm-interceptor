@@ -164,7 +164,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/nightfield/llm-interceptor/internal/types"
+	"github.com/chingjustwe/llm-Interceptor/internal/types"
 )
 
 type PostgresBackend struct {
@@ -354,7 +354,7 @@ package plugins
 import (
 	"testing"
 
-	"github.com/nightfield/llm-interceptor/internal/plugin"
+	"github.com/chingjustwe/llm-Interceptor/internal/plugin"
 )
 
 func TestCostTracker_TracksCost(t *testing.T) {
@@ -399,8 +399,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nightfield/llm-interceptor/internal/plugin"
-	"github.com/nightfield/llm-interceptor/internal/state"
+	"github.com/chingjustwe/llm-Interceptor/internal/plugin"
+	"github.com/chingjustwe/llm-Interceptor/internal/state"
 )
 
 var defaultPrices = map[string]struct {
@@ -530,8 +530,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nightfield/llm-interceptor/internal/plugin"
-	"github.com/nightfield/llm-interceptor/internal/state"
+	"github.com/chingjustwe/llm-Interceptor/internal/plugin"
+	"github.com/chingjustwe/llm-Interceptor/internal/state"
 )
 
 type BudgetPlugin struct {
@@ -622,8 +622,8 @@ package plugins
 import (
 	"fmt"
 
-	"github.com/nightfield/llm-interceptor/internal/plugin"
-	"github.com/nightfield/llm-interceptor/internal/state"
+	"github.com/chingjustwe/llm-Interceptor/internal/plugin"
+	"github.com/chingjustwe/llm-Interceptor/internal/state"
 )
 
 type RateLimitPlugin struct {
@@ -707,7 +707,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/nightfield/llm-interceptor/internal/plugin"
+	"github.com/chingjustwe/llm-Interceptor/internal/plugin"
 )
 
 type ToolPolicyPlugin struct {

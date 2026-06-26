@@ -1,4 +1,4 @@
-module github.com/nightfield/llm-interceptor
+module github.com/chingjustwe/llm-Interceptor
 
 go 1.26.3
 
