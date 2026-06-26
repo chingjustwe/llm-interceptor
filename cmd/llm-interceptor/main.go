@@ -175,6 +175,7 @@ func main() {
 		}
 
 		var respCtx plugin.ResponseContext
+		respCtx.Context = r.Context()
 		respCtx.RequestID = reqCtx.ID
 		respCtx.SessionID = reqCtx.SessionID
 		respCtx.Metadata = reqCtx.Metadata
