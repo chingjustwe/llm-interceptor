@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -173,29 +174,74 @@ func (o *OTelExporter) OnRequest(ctx *plugin.RequestContext) (*plugin.HookResult
 		attribute.String("gen_ai.system", "anthropic"),
 		attribute.String("gen_ai.conversation.id", ctx.SessionID),
 		attribute.String("llm_proxy.agent_id", ctx.AgentID),
-		attribute.String("gen_ai.request.content", lastTurnRequest(ctx.Body)),
+		attribute.String("gen_ai.request.content", extractUserContent(ctx.Body)),
 	)
 	ctx.Metadata["otel_span"] = span
 	return nil, nil
 }
 
-// lastTurnRequest parses the request body and returns only the last message
-// as a compact JSON string. System prompts and tools are excluded since they
-// repeat on every request and inflate trace attribute size.
-func lastTurnRequest(body []byte) string {
+// extractUserContent parses the request body and extracts just the current
+// user message as plain text, handling both Anthropic and OpenAI message
+// formats. For Anthropic, content is an array of blocks (text, tool_result,
+// etc.); for OpenAI, content can be a plain string or an array.
+// System prompts and conversation history are excluded.
+func extractUserContent(body []byte) string {
 	if len(body) == 0 {
 		return ""
 	}
 	var raw map[string]any
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return string(body)
+		return ""
 	}
 	msgs, ok := raw["messages"].([]any)
 	if !ok || len(msgs) == 0 {
-		return string(body)
+		return ""
 	}
-	b, _ := json.Marshal(msgs[len(msgs)-1])
-	return string(b)
+	last, ok := msgs[len(msgs)-1].(map[string]any)
+	if !ok {
+		return ""
+	}
+	return extractText(last["content"])
+}
+
+// extractText converts the content field of an LLM message to plain text.
+// Supports both Anthropic format (content_block array) and OpenAI format
+// (plain string or array). Text blocks, tool results, and tool uses are
+// concatenated with type labels for clarity in traces.
+func extractText(content any) string {
+	if content == nil {
+		return ""
+	}
+	switch v := content.(type) {
+	case string:
+		return v
+	case []any:
+		var parts []string
+		for _, block := range v {
+			b, ok := block.(map[string]any)
+			if !ok {
+				continue
+			}
+			tp, _ := b["type"].(string)
+			switch tp {
+			case "text":
+				if t, ok := b["text"].(string); ok {
+					parts = append(parts, t)
+				}
+			case "tool_result":
+				if c, ok := b["content"]; ok {
+					parts = append(parts, extractText(c))
+				}
+			case "tool_use":
+				if name, ok := b["name"].(string); ok {
+					parts = append(parts, "[tool_use: "+name+"]")
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return fmt.Sprint(v)
+	}
 }
 
 const maxResponseBodyAttr = 8192
