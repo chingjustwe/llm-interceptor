@@ -15,6 +15,20 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// defaultPrices is a minimal fallback pricing table used by the stats endpoint
+// to estimate per-model cost from stored token usage. Values are $/1M tokens.
+// This is a best-effort estimate; the accurate per-request cost is persisted
+// in the state store by the cost-tracker plugin.
+var defaultPrices = map[string][2]float64{
+	"claude-sonnet-4-6":          {3.0, 15.0},
+	"claude-sonnet-4-20250506":   {3.0, 15.0},
+	"claude-3-5-sonnet-20241022": {3.0, 15.0},
+	"claude-3-opus-20240229":     {15.0, 75.0},
+	"claude-3-haiku-20240307":    {0.25, 1.25},
+	"claude-3-5-haiku-20241022":  {0.25, 1.25},
+	"deepseek-v4-flash":          {0.14, 0.28},
+}
+
 // Handler provides HTTP endpoints for the web UI to query stored requests,
 // sessions, and aggregate statistics.
 type Handler struct {
@@ -118,15 +132,16 @@ func (h *Handler) listSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 // costStats returns aggregate cost and usage statistics, including daily/total
-// cost from the state store and token/request counts from the storage backend.
+// cost (in USD) from the state store and per-model breakdowns from the storage
+// backend. Costs are stored as microdollars and converted to dollars here.
 func (h *Handler) costStats(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	today := time.Now().Format("2006-01-02")
 	dailyKey := "cost:daily:" + today
 
-	dailyCost, _ := h.st.Get(ctx, dailyKey)
-	totalCost, _ := h.st.Get(ctx, "cost:total")
+	dailyCostMicro, _ := h.st.Get(ctx, dailyKey)
+	totalCostMicro, _ := h.st.Get(ctx, "cost:total")
 
 	reqs, err := h.store.QueryRequests(ctx, types.RequestFilter{Limit: 10000})
 	if err != nil {
@@ -135,19 +150,34 @@ func (h *Handler) costStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var totalTokens int64
-	modelStats := make(map[string]struct {
-		Requests int   `json:"requests"`
-		Tokens   int64 `json:"tokens"`
-	})
+	type modelStat struct {
+		Requests int     `json:"requests"`
+		Tokens   int64   `json:"tokens"`
+		CostUSD  float64 `json:"cost_usd"`
+	}
+	modelStats := make(map[string]*modelStat)
 	for _, req := range reqs {
 		tokens := int64(req.Usage.InputTokens + req.Usage.OutputTokens +
 			req.Usage.CacheReadTokens + req.Usage.CacheCreationTokens)
 		totalTokens += tokens
 
 		entry := modelStats[req.Model]
+		if entry == nil {
+			entry = &modelStat{}
+			modelStats[req.Model] = entry
+		}
 		entry.Requests++
 		entry.Tokens += tokens
-		modelStats[req.Model] = entry
+
+		p, ok := defaultPrices[req.Model]
+		inputCost := float64(req.Usage.InputTokens) / 1_000_000 * p[0]
+		outputCost := float64(req.Usage.OutputTokens) / 1_000_000 * p[1]
+		if !ok {
+			total := float64(req.Usage.InputTokens + req.Usage.OutputTokens)
+			inputCost = total / 1_000_000 * 2.0
+			outputCost = 0
+		}
+		entry.CostUSD += inputCost + outputCost
 	}
 
 	perModel := make([]map[string]any, 0, len(modelStats))
@@ -156,14 +186,25 @@ func (h *Handler) costStats(w http.ResponseWriter, r *http.Request) {
 			"model":    model,
 			"requests": stats.Requests,
 			"tokens":   stats.Tokens,
+			"cost_usd": round2(stats.CostUSD),
 		})
 	}
 
 	json.NewEncoder(w).Encode(map[string]any{
-		"daily_cost":     dailyCost,
-		"total_cost":     totalCost,
+		"daily_cost":     microToDollar(dailyCostMicro),
+		"total_cost":     microToDollar(totalCostMicro),
 		"total_requests": len(reqs),
 		"total_tokens":   totalTokens,
 		"per_model":      perModel,
 	})
+}
+
+// microToDollar converts microdollars to dollars (μ$ ÷ 1,000,000).
+func microToDollar(micro int64) float64 {
+	return float64(micro) / 1_000_000
+}
+
+// round2 rounds f to 2 decimal places.
+func round2(f float64) float64 {
+	return float64(int64(f*100+0.5)) / 100
 }

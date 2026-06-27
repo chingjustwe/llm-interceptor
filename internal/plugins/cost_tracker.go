@@ -150,6 +150,7 @@ func (c *CostTracker) OnResponse(ctx *plugin.ResponseContext) error {
 		// be cancelled by the time OnResponse runs.
 		c.state.Increment(context.Background(), "cost:session:"+ctx.SessionID, costMicro)
 		c.state.Increment(context.Background(), "cost:daily:"+today, costMicro)
+		c.state.Increment(context.Background(), "cost:total", costMicro)
 	}
 	return nil
 }
