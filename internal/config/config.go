@@ -41,9 +41,14 @@ type PriceConfig struct {
 // CostTrackerPluginConfig enables the cost-tracking plugin and optionally
 // overrides per-model pricing. The key is the model name as reported in
 // the LLM response (e.g. "deepseek-v4-flash").
+//
+// If PricingURL is set, pricing is fetched from that URL (expected format:
+// https://models.dev/api.json) and merged into the static defaults. Config-level
+// Prices override both static defaults and fetched pricing.
 type CostTrackerPluginConfig struct {
-	Enabled bool                  `yaml:"enabled"`
-	Prices  map[string]PriceConfig `yaml:"prices,omitempty"`
+	Enabled    bool                   `yaml:"enabled"`
+	Prices     map[string]PriceConfig `yaml:"prices,omitempty"`
+	PricingURL string                 `yaml:"pricing_url,omitempty"`
 }
 
 // BudgetPluginConfig sets per-session and per-day cost limits in USD.

@@ -5,6 +5,10 @@ package plugins
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
 	"sync"
 	"time"
 
@@ -18,21 +22,15 @@ type PriceEntry struct {
 	OutputPerM float64
 }
 
-// Default per-million-token prices for Anthropic and DeepSeek models, keyed by
-// model ID. Anthropic prices from https://docs.anthropic.com/en/docs/about-claude/pricing.
-// DeepSeek prices from https://api-docs.deepseek.com/quick_start/pricing.
+// Default per-million-token prices for Anthropic models, keyed by model ID.
+// Sourced from https://docs.anthropic.com/en/docs/about-claude/pricing.
 var defaultPrices = map[string]PriceEntry{
-	// Anthropic models
-	"claude-sonnet-4-6":               {InputPerM: 3.0, OutputPerM: 15.0},
-	"claude-sonnet-4-20250506":        {InputPerM: 3.0, OutputPerM: 15.0},
-	"claude-3-5-sonnet-20241022":      {InputPerM: 3.0, OutputPerM: 15.0},
-	"claude-3-opus-20240229":          {InputPerM: 15.0, OutputPerM: 75.0},
-	"claude-3-haiku-20240307":         {InputPerM: 0.25, OutputPerM: 1.25},
-	"claude-3-5-haiku-20241022":       {InputPerM: 0.25, OutputPerM: 1.25},
-	// DeepSeek models
-	"deepseek-chat":                   {InputPerM: 0.27, OutputPerM: 1.10},
-	"deepseek-reasoner":               {InputPerM: 0.55, OutputPerM: 2.19},
-	"deepseek-v4-flash":               {InputPerM: 0.50, OutputPerM: 2.00},
+	"claude-sonnet-4-6":          {InputPerM: 3.0, OutputPerM: 15.0},
+	"claude-sonnet-4-20250506":   {InputPerM: 3.0, OutputPerM: 15.0},
+	"claude-3-5-sonnet-20241022": {InputPerM: 3.0, OutputPerM: 15.0},
+	"claude-3-opus-20240229":     {InputPerM: 15.0, OutputPerM: 75.0},
+	"claude-3-haiku-20240307":    {InputPerM: 0.25, OutputPerM: 1.25},
+	"claude-3-5-haiku-20241022":  {InputPerM: 0.25, OutputPerM: 1.25},
 }
 
 // CostTracker implements the Plugin interface to track LLM usage costs per
@@ -129,4 +127,72 @@ func (c *CostTracker) SetPrices(prices map[string]PriceEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.prices = prices
+}
+
+// MergePrices merges additional prices into the tracker's price table.
+// Existing model prices are overwritten; new models are added.
+func (c *CostTracker) MergePrices(additional map[string]PriceEntry) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k, v := range additional {
+		c.prices[k] = v
+	}
+}
+
+// FetchOnlinePricing fetches model pricing from a remote JSON URL (formatted
+// like https://models.dev/api.json) and returns a flat model_id → PriceEntry
+// map. The expected format is:
+//
+//	{ "<provider>": { "models": { "<model_id>": { "cost": { "input": ..., "output": ... } } } } }
+func FetchOnlinePricing(url string) (map[string]PriceEntry, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("fetch pricing: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch pricing: HTTP %d", resp.StatusCode)
+	}
+
+	var raw map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, fmt.Errorf("decode pricing: %w", err)
+	}
+
+	prices := make(map[string]PriceEntry)
+	for _, provider := range raw {
+		p, ok := provider.(map[string]any)
+		if !ok {
+			continue
+		}
+		models, ok := p["models"].(map[string]any)
+		if !ok {
+			continue
+		}
+		for modelID, modelData := range models {
+			if _, exists := prices[modelID]; exists {
+				continue // first provider wins
+			}
+			m, ok := modelData.(map[string]any)
+			if !ok {
+				continue
+			}
+			cost, ok := m["cost"].(map[string]any)
+			if !ok {
+				continue
+			}
+			input, _ := cost["input"].(float64)
+			output, _ := cost["output"].(float64)
+			if input <= 0 || output <= 0 {
+				continue
+			}
+			prices[modelID] = PriceEntry{InputPerM: input, OutputPerM: output}
+		}
+	}
+	if len(prices) == 0 {
+		return nil, fmt.Errorf("fetch pricing: no valid models found at %s", url)
+	}
+	log.Printf("cost: loaded %d model prices from %s", len(prices), url)
+	return prices, nil
 }

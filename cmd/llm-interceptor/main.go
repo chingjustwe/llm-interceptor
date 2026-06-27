@@ -155,13 +155,27 @@ func main() {
 	}
 	if cfg.Plugins.CostTracker.Enabled {
 		ct := plugins.NewCostTracker(st)
+
+		// Fetch online pricing (merges into defaults).
+		pricingURL := cfg.Plugins.CostTracker.PricingURL
+		if pricingURL == "" {
+			pricingURL = "https://models.dev/api.json"
+		}
+		if onlinePrices, err := plugins.FetchOnlinePricing(pricingURL); err != nil {
+			log.Printf("cost: online pricing unavailable (%v), using static defaults", err)
+		} else {
+			ct.MergePrices(onlinePrices)
+		}
+
+		// Config-level Prices override everything (highest priority).
 		if len(cfg.Plugins.CostTracker.Prices) > 0 {
 			prices := make(map[string]plugins.PriceEntry, len(cfg.Plugins.CostTracker.Prices))
 			for model, p := range cfg.Plugins.CostTracker.Prices {
 				prices[model] = plugins.PriceEntry{InputPerM: p.InputPerM, OutputPerM: p.OutputPerM}
 			}
-			ct.SetPrices(prices)
+			ct.MergePrices(prices)
 		}
+
 		pluginList = append(pluginList, ct)
 	}
 	if cfg.Plugins.Budget.MaxCostPerSession > 0 || cfg.Plugins.Budget.MaxCostPerDay > 0 {
