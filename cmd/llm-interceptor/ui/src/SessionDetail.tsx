@@ -1,5 +1,14 @@
 import { useEffect, useState } from 'react'
 
+function formatBody(s: string | undefined): string {
+  if (!s) return '{}'
+  try {
+    return JSON.stringify(JSON.parse(s), null, 2)
+  } catch {
+    return s
+  }
+}
+
 type StoredRequest = {
   id: string
   session_id: string
@@ -36,8 +45,8 @@ export default function SessionDetail({ sessionId, onBack }: { sessionId: string
       {requests.map(r => (
         <details key={r.id} style={{ marginBottom: '0.5rem' }}>
           <summary>{r.model} &mdash; {r.duration_ms}ms &mdash; {r.status_code}</summary>
-          <pre>{JSON.stringify(JSON.parse(r.request || '{}'), null, 2)}</pre>
-          <pre>{JSON.stringify(JSON.parse(r.response || '{}'), null, 2)}</pre>
+          <pre>{formatBody(r.request)}</pre>
+          <pre>{formatBody(r.response)}</pre>
         </details>
       ))}
     </div>
