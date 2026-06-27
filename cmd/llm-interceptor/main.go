@@ -30,6 +30,49 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 )
 
+// anthropicErrorType maps an HTTP status code to the corresponding Anthropic
+// API error type string. Plugins use custom status codes; this normalizes them
+// to the upstream API format so clients (Claude Code, etc.) can display
+// meaningful error messages instead of blindly retrying.
+func anthropicErrorType(statusCode int) string {
+	switch statusCode {
+	case 429:
+		return "rate_limit_error"
+	case 400:
+		return "invalid_request_error"
+	case 401:
+		return "authentication_error"
+	case 403:
+		return "permission_error"
+	case 404:
+		return "not_found_error"
+	case 500:
+		return "api_error"
+	case 529:
+		return "overloaded_error"
+	default:
+		return "api_error"
+	}
+}
+
+// writeAnthropicError writes an error response in Anthropic API JSON format
+// so that Anthropic SDK clients can parse the error and display a meaningful
+// message to the user.
+func writeAnthropicError(w http.ResponseWriter, message string, statusCode int) {
+	w.Header().Set("Content-Type", "application/json")
+	if statusCode == 429 {
+		w.Header().Set("Retry-After", "60")
+	}
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(map[string]any{
+		"type": "error",
+		"error": map[string]string{
+			"type":    anthropicErrorType(statusCode),
+			"message": message,
+		},
+	})
+}
+
 //go:embed ui/dist/index.html
 //go:embed ui/dist/assets
 var uiFS embed.FS
@@ -185,12 +228,12 @@ func main() {
 		hookResult, err := disp.ExecuteOnRequest(reqCtx)
 		if err != nil {
 			log.Printf("plugin error: %v", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			writeAnthropicError(w, "internal error", http.StatusInternalServerError)
 			return
 		}
 		if hookResult != nil && hookResult.Block {
 			log.Printf("request blocked: %s (status=%d)", hookResult.Reason, hookResult.StatusCode)
-			http.Error(w, hookResult.Reason, hookResult.StatusCode)
+			writeAnthropicError(w, hookResult.Reason, hookResult.StatusCode)
 			return
 		}
 
