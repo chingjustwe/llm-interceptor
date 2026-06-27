@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: llm-interceptor-pg
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: llmproxy
+      POSTGRES_PASSWORD: llmproxy
+      POSTGRES_DB: llmproxy
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
