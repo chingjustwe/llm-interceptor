@@ -22,13 +22,16 @@ type RequestContext struct {
 }
 
 // HookResult allows a plugin to signal that a request should be blocked.
-// When Block is true, the request is rejected with the given StatusCode and Reason.
+// When Block is true, the request is rejected with the given StatusCode, Reason,
+// and Anthropic ErrorType (e.g. "rate_limit_error", "invalid_request_error").
+// If ErrorType is empty, the caller derives it from StatusCode.
 // If RetryAfterSec > 0, a Retry-After header is set on the response.
 type HookResult struct {
 	Block         bool
 	Reason        string
 	StatusCode    int
 	RetryAfterSec int
+	ErrorType     string
 }
 
 // Usage holds token consumption metrics extracted from an LLM response.

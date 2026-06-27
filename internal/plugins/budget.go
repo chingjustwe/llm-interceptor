@@ -48,6 +48,7 @@ func (b *BudgetPlugin) OnRequest(ctx *plugin.RequestContext) (*plugin.HookResult
 				Block:      true,
 				Reason:     fmt.Sprintf("session budget exceeded (max $%.2f)", b.maxPerSession),
 				StatusCode: 429,
+				ErrorType:  "invalid_request_error",
 			}, nil
 		}
 	}
@@ -59,6 +60,7 @@ func (b *BudgetPlugin) OnRequest(ctx *plugin.RequestContext) (*plugin.HookResult
 				Block:      true,
 				Reason:     fmt.Sprintf("daily budget exceeded (max $%.2f)", b.maxPerDay),
 				StatusCode: 429,
+				ErrorType:  "invalid_request_error",
 			}, nil
 		}
 	}

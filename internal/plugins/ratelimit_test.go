@@ -41,6 +41,9 @@ func TestRateLimitPlugin_RequestLimit_Blocks(t *testing.T) {
 	if hook.RetryAfterSec != 60 {
 		t.Fatalf("expected RetryAfterSec=60, got %d", hook.RetryAfterSec)
 	}
+	if hook.ErrorType != "" {
+		t.Fatalf("expected empty ErrorType, got %q", hook.ErrorType)
+	}
 }
 
 func TestRateLimitPlugin_RequestLimit_Zero(t *testing.T) {

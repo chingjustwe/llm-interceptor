@@ -39,6 +39,9 @@ func TestBudgetPlugin_SessionLimit_Blocks(t *testing.T) {
 	if hook.RetryAfterSec != 0 {
 		t.Fatalf("expected RetryAfterSec=0 for budget block, got %d", hook.RetryAfterSec)
 	}
+	if hook.ErrorType != "invalid_request_error" {
+		t.Fatalf("expected ErrorType=invalid_request_error, got %q", hook.ErrorType)
+	}
 	if hook.Reason != "session budget exceeded (max $1.00)" {
 		t.Fatalf("unexpected reason: %q", hook.Reason)
 	}
@@ -88,6 +91,9 @@ func TestBudgetPlugin_DailyLimit_Blocks(t *testing.T) {
 	}
 	if hook.RetryAfterSec != 0 {
 		t.Fatalf("expected RetryAfterSec=0 for budget block, got %d", hook.RetryAfterSec)
+	}
+	if hook.ErrorType != "invalid_request_error" {
+		t.Fatalf("expected ErrorType=invalid_request_error, got %q", hook.ErrorType)
 	}
 	if hook.Reason != "daily budget exceeded (max $2.00)" {
 		t.Fatalf("unexpected reason: %q", hook.Reason)
