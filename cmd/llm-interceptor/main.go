@@ -189,6 +189,7 @@ func main() {
 			return
 		}
 		if hookResult != nil && hookResult.Block {
+			log.Printf("request blocked: %s (status=%d)", hookResult.Reason, hookResult.StatusCode)
 			http.Error(w, hookResult.Reason, hookResult.StatusCode)
 			return
 		}
