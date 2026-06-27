@@ -12,7 +12,7 @@ import (
 
 // Config is the top-level configuration structure for the LLM Interceptor.
 // It specifies the listen address, upstream provider, storage, state store,
-// and plugin settings.
+// plugin settings, and optional router configuration for multi-provider mode.
 type Config struct {
 	Listen       string           `yaml:"listen"`
 	Upstream     string           `yaml:"upstream"`
@@ -21,6 +21,7 @@ type Config struct {
 	Storage      StorageConfig    `yaml:"storage"`
 	StateStore   StateStoreConfig `yaml:"state_store"`
 	Plugins      PluginConfig     `yaml:"plugins"`
+	Router       RouterConfig     `yaml:"router"`
 }
 
 // PluginConfig holds configuration for all built-in plugins.
@@ -117,6 +118,25 @@ type MemoryConfig struct{}
 // RedisConfig specifies the Redis server URL for the state store.
 type RedisConfig struct {
 	URL string `yaml:"url"`
+}
+
+// RouterConfig controls the multi-provider LLM router. When enabled, the
+// gateway manages API keys and routes requests to different LLM providers
+// based on model name patterns. When disabled (default), the gateway operates
+// in passthrough mode, forwarding requests to a single upstream.
+type RouterConfig struct {
+	Enabled   bool             `yaml:"enabled"`
+	Providers []ProviderConfig `yaml:"providers"`
+}
+
+// ProviderConfig defines a single upstream LLM provider for the router.
+// ModelGlob is a simple glob pattern (e.g. "gpt-*" or "claude-*") that
+// determines which model names this provider handles.
+type ProviderConfig struct {
+	Name      string `yaml:"name"`
+	BaseURL   string `yaml:"base_url"`
+	ModelGlob string `yaml:"model_glob"`
+	APIKey    string `yaml:"api_key"`
 }
 
 // Default returns a configuration with sensible defaults: listen on 127.0.0.1:8080,
