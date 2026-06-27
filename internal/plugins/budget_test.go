@@ -33,8 +33,8 @@ func TestBudgetPlugin_SessionLimit_Blocks(t *testing.T) {
 	if !hook.Block {
 		t.Fatal("expected Block=true")
 	}
-	if hook.StatusCode != 403 {
-		t.Fatalf("expected status 403, got %d", hook.StatusCode)
+	if hook.StatusCode != 429 {
+		t.Fatalf("expected status 429, got %d", hook.StatusCode)
 	}
 	if hook.Reason != "session budget exceeded (max $1.00)" {
 		t.Fatalf("unexpected reason: %q", hook.Reason)
@@ -80,8 +80,8 @@ func TestBudgetPlugin_DailyLimit_Blocks(t *testing.T) {
 	if !hook.Block {
 		t.Fatal("expected Block=true")
 	}
-	if hook.StatusCode != 403 {
-		t.Fatalf("expected status 403, got %d", hook.StatusCode)
+	if hook.StatusCode != 429 {
+		t.Fatalf("expected status 429, got %d", hook.StatusCode)
 	}
 	if hook.Reason != "daily budget exceeded (max $2.00)" {
 		t.Fatalf("unexpected reason: %q", hook.Reason)

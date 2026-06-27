@@ -57,12 +57,11 @@ func anthropicErrorType(statusCode int) string {
 
 // writeAnthropicError writes an error response in Anthropic API JSON format
 // so that Anthropic SDK clients can parse the error and display a meaningful
-// message to the user.
+// message to the user. Note: Retry-After is intentionally omitted here so that
+// governance blocks (budget, rate-limit, tool-policy) display the error message
+// to the user rather than triggering silent retries.
 func writeAnthropicError(w http.ResponseWriter, message string, statusCode int) {
 	w.Header().Set("Content-Type", "application/json")
-	if statusCode == 429 {
-		w.Header().Set("Retry-After", "60")
-	}
 	w.WriteHeader(statusCode)
 	json.NewEncoder(w).Encode(map[string]any{
 		"type": "error",

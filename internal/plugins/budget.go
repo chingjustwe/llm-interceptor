@@ -39,7 +39,7 @@ func (b *BudgetPlugin) Name() string { return "budget" }
 
 // OnRequest checks accumulated costs against configured budget limits. Costs
 // are stored in the state backend as microdollars by the CostTracker plugin.
-// Returns a blocking HookResult with status 403 if either limit is exceeded.
+// Returns a blocking HookResult with status 429 if either limit is exceeded.
 func (b *BudgetPlugin) OnRequest(ctx *plugin.RequestContext) (*plugin.HookResult, error) {
 	if b.maxPerSession > 0 {
 		costMicro, err := b.state.Get(ctx.Context, "cost:session:"+ctx.SessionID)
@@ -47,7 +47,7 @@ func (b *BudgetPlugin) OnRequest(ctx *plugin.RequestContext) (*plugin.HookResult
 			return &plugin.HookResult{
 				Block:      true,
 				Reason:     fmt.Sprintf("session budget exceeded (max $%.2f)", b.maxPerSession),
-				StatusCode: 403,
+				StatusCode: 429,
 			}, nil
 		}
 	}
@@ -58,7 +58,7 @@ func (b *BudgetPlugin) OnRequest(ctx *plugin.RequestContext) (*plugin.HookResult
 			return &plugin.HookResult{
 				Block:      true,
 				Reason:     fmt.Sprintf("daily budget exceeded (max $%.2f)", b.maxPerDay),
-				StatusCode: 403,
+				StatusCode: 429,
 			}, nil
 		}
 	}
