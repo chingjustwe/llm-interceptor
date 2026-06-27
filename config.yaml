@@ -29,8 +29,8 @@ plugins:
   cost-tracker:
     enabled: true
   budget:
-    max_cost_per_session: 0.01
-    max_cost_per_day: 0.02
+    #max_cost_per_session: 0.0001
+    #max_cost_per_day: 0.002
   rate-limit:
     requests_per_minute: 50
     tokens_per_minute: 100000

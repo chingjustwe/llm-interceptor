@@ -15,25 +15,16 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// defaultPrices is a minimal fallback pricing table used by the stats endpoint
-// to estimate per-model cost from stored token usage. Values are $/1M tokens.
-// This is a best-effort estimate; the accurate per-request cost is persisted
-// in the state store by the cost-tracker plugin.
-var defaultPrices = map[string][2]float64{
-	"claude-sonnet-4-6":          {3.0, 15.0},
-	"claude-sonnet-4-20250506":   {3.0, 15.0},
-	"claude-3-5-sonnet-20241022": {3.0, 15.0},
-	"claude-3-opus-20240229":     {15.0, 75.0},
-	"claude-3-haiku-20240307":    {0.25, 1.25},
-	"claude-3-5-haiku-20241022":  {0.25, 1.25},
-	"deepseek-v4-flash":          {0.14, 0.28},
-}
+// CostCalculator computes the USD cost of an LLM request from model and tokens.
+// If nil, the handler falls back to a simple static estimate.
+type CostCalculator func(model string, inputTokens, outputTokens int) float64
 
 // Handler provides HTTP endpoints for the web UI to query stored requests,
 // sessions, and aggregate statistics.
 type Handler struct {
-	store storage.Backend
-	st    state.Backend
+	store           storage.Backend
+	st              state.Backend
+	CalculateCostFn CostCalculator
 }
 
 // NewHandler creates an API handler backed by the given storage and state backends.
@@ -169,15 +160,12 @@ func (h *Handler) costStats(w http.ResponseWriter, r *http.Request) {
 		entry.Requests++
 		entry.Tokens += tokens
 
-		p, ok := defaultPrices[req.Model]
-		inputCost := float64(req.Usage.InputTokens) / 1_000_000 * p[0]
-		outputCost := float64(req.Usage.OutputTokens) / 1_000_000 * p[1]
-		if !ok {
+		if h.CalculateCostFn != nil {
+			entry.CostUSD += h.CalculateCostFn(req.Model, req.Usage.InputTokens, req.Usage.OutputTokens)
+		} else {
 			total := float64(req.Usage.InputTokens + req.Usage.OutputTokens)
-			inputCost = total / 1_000_000 * 2.0
-			outputCost = 0
+			entry.CostUSD += total / 1_000_000 * 2.0
 		}
-		entry.CostUSD += inputCost + outputCost
 	}
 
 	perModel := make([]map[string]any, 0, len(modelStats))

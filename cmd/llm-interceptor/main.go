@@ -153,6 +153,7 @@ func main() {
 		pluginList = append(pluginList, exporter)
 		defer exporter.Shutdown(ctx)
 	}
+	var calculateCost api.CostCalculator
 	if cfg.Plugins.CostTracker.Enabled {
 		ct := plugins.NewCostTracker(st)
 
@@ -186,6 +187,7 @@ func main() {
 		defer cancelRefresh()
 
 		pluginList = append(pluginList, ct)
+		calculateCost = ct.CalculateCost
 	}
 	if cfg.Plugins.Budget.MaxCostPerSession > 0 || cfg.Plugins.Budget.MaxCostPerDay > 0 {
 		pluginList = append(pluginList, plugins.NewBudgetPlugin(st,
@@ -222,6 +224,7 @@ func main() {
 
 	// API routes
 	apiHandler := api.NewHandler(store, st)
+	apiHandler.CalculateCostFn = calculateCost
 	apiHandler.Register(r)
 
 	broker := api.NewSSEBroker()
