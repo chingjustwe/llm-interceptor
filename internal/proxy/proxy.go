@@ -181,11 +181,7 @@ func (p *Proxy) Forward(w http.ResponseWriter, r *http.Request) {
 // HandleRequestStream sends a streaming (SSE) request to the upstream provider,
 // relays Server-Sent Events directly to the caller, and collects aggregated usage
 // data, tool calls, stop reason, and response body from the event stream.
-//
-// If isToolBlocked is non-nil, tool_use content blocks whose name returns true
-// are replaced with a text block saying the tool was blocked by policy, and the
-// stop_reason is overridden to "end_turn".
-func (p *Proxy) HandleRequestStream(body []byte, headers map[string]string, w http.ResponseWriter, isToolBlocked func(name string) bool) ([]byte, *UsageData, []ToolCall, string, int64, error) {
+func (p *Proxy) HandleRequestStream(body []byte, headers map[string]string, w http.ResponseWriter) ([]byte, *UsageData, []ToolCall, string, int64, error) {
 	start := time.Now()
 
 	req, err := http.NewRequest("POST", p.upstream+"/v1/messages", bytes.NewReader(body))
@@ -209,11 +205,6 @@ func (p *Proxy) HandleRequestStream(body []byte, headers map[string]string, w ht
 	defer resp.Body.Close()
 
 	for k, v := range resp.Header {
-		// Skip Content-Length — we may modify the body (tool blocking) and
-		// SSE responses use chunked transfer-encoding anyway.
-		if k == "Content-Length" {
-			continue
-		}
 		w.Header()[k] = v
 	}
 	w.WriteHeader(resp.StatusCode)
@@ -227,54 +218,9 @@ func (p *Proxy) HandleRequestStream(body []byte, headers map[string]string, w ht
 		return body, nil, nil, "", time.Since(start).Milliseconds(), nil
 	}
 
-	respBody, usage, tools, stopReason, duration, err := streamAndCollect(resp, w, isToolBlocked)
+	respBody, usage, tools, stopReason, duration, err := streamAndCollect(resp, w)
 	if err != nil {
 		return nil, nil, nil, "", duration, err
 	}
 	return respBody, &usage, tools, stopReason, duration, nil
-}
-
-// InterceptBlockedTools checks a non-streaming LLM response body for tool_use
-// content blocks whose names match the isBlocked predicate. Matching blocks
-// are replaced with a text block saying the tool was blocked, and
-// stop_reason is changed from "tool_use" to "end_turn". Returns the
-// original body unchanged if no tools are blocked.
-func InterceptBlockedTools(body []byte, isBlocked func(name string) bool) []byte {
-	var raw map[string]any
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return body
-	}
-	content, ok := raw["content"].([]any)
-	if !ok {
-		return body
-	}
-	blocked := false
-	for i, c := range content {
-		block, ok := c.(map[string]any)
-		if !ok {
-			continue
-		}
-		if block["type"] != "tool_use" {
-			continue
-		}
-		name, ok := block["name"].(string)
-		if !ok || !isBlocked(name) {
-			continue
-		}
-		content[i] = map[string]any{
-			"type": "text",
-			"text": fmt.Sprintf("Tool '%s' is blocked by interceptor policy. You cannot use this tool in this session.", name),
-		}
-		blocked = true
-	}
-	if !blocked {
-		return body
-	}
-	raw["content"] = content
-	raw["stop_reason"] = "end_turn"
-	modified, err := json.Marshal(raw)
-	if err != nil {
-		return body
-	}
-	return modified
 }

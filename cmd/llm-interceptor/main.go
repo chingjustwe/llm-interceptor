@@ -125,13 +125,11 @@ func main() {
 			cfg.Plugins.RateLimit.TokensPerMinute,
 		))
 	}
-	var toolPolicy *plugins.ToolPolicyPlugin
 	if len(cfg.Plugins.ToolPolicy.BlockedTools) > 0 || len(cfg.Plugins.ToolPolicy.AllowedTools) > 0 {
-		toolPolicy = plugins.NewToolPolicyPlugin(
+		pluginList = append(pluginList, plugins.NewToolPolicyPlugin(
 			cfg.Plugins.ToolPolicy.BlockedTools,
 			cfg.Plugins.ToolPolicy.AllowedTools,
-		)
-		pluginList = append(pluginList, toolPolicy)
+		))
 	}
 	disp := plugin.NewDispatcher(pluginList)
 
@@ -206,14 +204,11 @@ func main() {
 			respCtx.Model = model.Model
 		}
 
-		// Build the tool blocking function for the proxy layer.
-		var isToolBlocked func(name string) bool
-		if toolPolicy != nil {
-			isToolBlocked = toolPolicy.IsBlocked
-		}
+		// Use the request body after plugins may have modified it.
+		body = reqCtx.Body
 
 		if isStream {
-			respBody, usage, toolCalls, stopReason, duration, err := target.HandleRequestStream(body, reqCtx.Headers, w, isToolBlocked)
+			respBody, usage, toolCalls, stopReason, duration, err := target.HandleRequestStream(body, reqCtx.Headers, w)
 			if err != nil {
 				log.Printf("proxy stream error: %v", err)
 				return
@@ -245,24 +240,14 @@ func main() {
 			respCtx.StopReason = stopReason
 			respCtx.Body = pr.Body
 
-			// Apply tool policy to the response body before writing to client.
-			bodyToWrite := pr.Body
-			if isToolBlocked != nil {
-				bodyToWrite = interceptBlockedTools(pr.Body, isToolBlocked)
-			}
-
 			for k, v := range pr.Headers {
-				// Skip Content-Length since we may have modified the body.
-				if k == "Content-Length" {
-					continue
-				}
 				w.Header().Set(k, v)
 			}
 			if w.Header().Get("Content-Type") == "" {
 				w.Header().Set("Content-Type", "application/json")
 			}
 			w.WriteHeader(pr.StatusCode)
-			w.Write(bodyToWrite)
+			w.Write(pr.Body)
 		}
 
 		if err := disp.ExecuteOnResponse(&respCtx); err != nil {
@@ -327,11 +312,4 @@ func main() {
 	}
 }
 
-// interceptBlockedTools checks a non-streaming LLM response body for tool_use
-// content blocks whose names match the isBlocked predicate. Matching blocks
-// are replaced with a text block saying the tool was blocked, and
-// stop_reason is changed from "tool_use" to "end_turn". Returns the
-// original body unchanged if no tools are blocked.
-func interceptBlockedTools(body []byte, isBlocked func(name string) bool) []byte {
-	return proxy.InterceptBlockedTools(body, isBlocked)
-}
+
