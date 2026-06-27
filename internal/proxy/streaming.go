@@ -158,6 +158,7 @@ func streamAndCollect(upstreamResp *http.Response, w http.ResponseWriter, isTool
 					discardPending()
 					writeSSE(w, flusher, "event: content_block_start")
 					writeSSE(w, flusher, fmt.Sprintf(`data: {"type":"content_block_start","index":%d,"content_block":{"type":"text","text":%q}}`, blockedIdx, blockedMsg))
+					writeSSE(w, flusher, "") // blank line = SSE event separator
 					writeSSE(w, flusher, "event: content_block_stop")
 					writeSSE(w, flusher, fmt.Sprintf(`data: {"type":"content_block_stop","index":%d}`, blockedIdx))
 					respBody.WriteString(blockedMsg)

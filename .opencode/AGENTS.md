@@ -40,6 +40,11 @@ internal/
 - Metadata map on context is the inter-plugin communication channel
 - Storage / State are interface-abstracted, implementations swappable
 
+## Development Workflow
+- Every bugfix MUST include one or more tests that reproduce the bug before the fix and pass after it. No exception.
+- Before claiming work is complete, run `go build ./... && go vet ./... && go test ./... -v` and confirm all green.
+- Commit granularly: one logical change per commit.
+
 ## Phase 1 Critical Conventions
 - `plugin.RequestContext` and `plugin.ResponseContext` use `Metadata map[string]any`
 - Dispatcher runs OnResponse in reverse plugin order

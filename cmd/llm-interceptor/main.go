@@ -252,6 +252,10 @@ func main() {
 			}
 
 			for k, v := range pr.Headers {
+				// Skip Content-Length since we may have modified the body.
+				if k == "Content-Length" {
+					continue
+				}
 				w.Header().Set(k, v)
 			}
 			if w.Header().Get("Content-Type") == "" {

@@ -209,6 +209,11 @@ func (p *Proxy) HandleRequestStream(body []byte, headers map[string]string, w ht
 	defer resp.Body.Close()
 
 	for k, v := range resp.Header {
+		// Skip Content-Length — we may modify the body (tool blocking) and
+		// SSE responses use chunked transfer-encoding anyway.
+		if k == "Content-Length" {
+			continue
+		}
 		w.Header()[k] = v
 	}
 	w.WriteHeader(resp.StatusCode)

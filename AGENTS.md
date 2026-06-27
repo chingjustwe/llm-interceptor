@@ -34,6 +34,18 @@ internal/
 4. LLM Router: mode detection, API key management, protocol translation
 5. React SPA frontend
 
+## Code Style
+- Every file must have a package-level comment explaining its purpose.
+- Every exported type, function, and method must have a Go doc comment (`// PackageName ...`, `// TypeName ...`, `// FuncName ...`).
+- Non-trivial internal/unexported logic must have inline comments explaining the "why" (not the "what").
+- Avoid magic values — name them as constants with comments.
+- Comments should be in English.
+
+## Development Workflow
+- Every bugfix MUST include one or more tests that reproduce the bug before the fix and pass after it. No exception.
+- Before claiming work is complete, run `go build ./... && go vet ./... && go test ./... -v` and confirm all green.
+- Commit granularly: one logical change per commit.
+
 ## Key Principles
 - Plugin architecture via Go interfaces (in-process)
 - Forward path never blocked — OTel/state updates async

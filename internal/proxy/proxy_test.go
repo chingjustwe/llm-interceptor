@@ -157,16 +157,8 @@ func TestE2E_StreamingToolBlock_RawOutput(t *testing.T) {
 		t.Logf("  tool[%d]: name=%q", i, tc.Name)
 	}
 
-	// Validate: the SSE output is valid (no JSON parse errors from client side).
-	for _, line := range strings.Split(rawSSE, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "data: ") {
-			data := strings.TrimPrefix(trimmed, "data: ")
-			if !json.Valid([]byte(data)) {
-				t.Errorf("INVALID JSON in data line: %s", data)
-			}
-		}
-	}
+	// Validate: SSE formatting (blank line separators) and valid JSON.
+	assertSSEValid(t, rawSSE)
 	// Validate: no tool_use in output, but blocked message present.
 	if strings.Contains(rawSSE, `"type":"tool_use"`) {
 		t.Error("FATAL: output still contains tool_use — client will get confused")
@@ -234,36 +226,27 @@ func TestStreamAndCollect_BlocksToolUse(t *testing.T) {
 			wantStop:  "end_turn",
 			wantBody:  "HelloTool call blocked by interceptor policy — the tool you attempted to use is not available in this session.",
 			wantTools: 1,
-			checkOutput: func(t *testing.T, output string) {
-				// Must NOT contain tool_use blocks.
-				if strings.Contains(output, `"type":"tool_use"`) {
-					t.Errorf("output should not contain tool_use, got:\n%s", output)
-				}
-				// Must contain the blocked message.
-				if !strings.Contains(output, "blocked by interceptor policy") {
-					t.Errorf("output should contain blocked message")
-				}
-				// Must have event: lines paired with data: lines.
-				if !strings.Contains(output, "event: content_block_start") {
-					t.Errorf("output should contain event: content_block_start")
-				}
-				if !strings.Contains(output, "event: content_block_stop") {
-					t.Errorf("output should contain event: content_block_stop")
-				}
-				if !strings.Contains(output, `"stop_reason":"end_turn"`) {
-					t.Errorf("output should contain stop_reason end_turn")
-				}
-				// Every data: line must be valid JSON.
-				for _, line := range strings.Split(output, "\n") {
-					trimmed := strings.TrimSpace(line)
-					if strings.HasPrefix(trimmed, "data: ") {
-						data := strings.TrimPrefix(trimmed, "data: ")
-						if !json.Valid([]byte(data)) {
-							t.Errorf("invalid JSON in SSE data line: %s", data)
-						}
-					}
-				}
-			},
+	checkOutput: func(t *testing.T, output string) {
+			assertSSEValid(t, output)
+			// Must NOT contain tool_use blocks.
+			if strings.Contains(output, `"type":"tool_use"`) {
+				t.Errorf("output should not contain tool_use, got:\n%s", output)
+			}
+			// Must contain the blocked message.
+			if !strings.Contains(output, "blocked by interceptor policy") {
+				t.Errorf("output should contain blocked message")
+			}
+			// Must have event: lines paired with data: lines.
+			if !strings.Contains(output, "event: content_block_start") {
+				t.Errorf("output should contain event: content_block_start")
+			}
+			if !strings.Contains(output, "event: content_block_stop") {
+				t.Errorf("output should contain event: content_block_stop")
+			}
+			if !strings.Contains(output, `"stop_reason":"end_turn"`) {
+				t.Errorf("output should contain stop_reason end_turn")
+			}
+		},
 		},
 		{
 			name:      "non_blocked_tool_passthrough",
@@ -345,6 +328,35 @@ func TestStreamAndCollect_BlocksToolUse(t *testing.T) {
 			}
 			tt.checkOutput(t, rec.Body.String())
 		})
+	}
+}
+
+// assertSSEValid checks raw SSE output for proper formatting per Anthropic's
+// SSE convention. For each data: line, the very next line must be blank (event
+// separator) or end-of-stream. This catches the bug where two events are
+// emitted without a blank line between them, causing the client's SSE parser
+// to merge them into a single event with concatenated (invalid) JSON.
+func assertSSEValid(t *testing.T, raw string) {
+	t.Helper()
+	lines := strings.Split(raw, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimRight(line, "\r")
+		if !strings.HasPrefix(trimmed, "data: ") {
+			continue
+		}
+		// Each data: line must be valid JSON.
+		data := strings.TrimPrefix(trimmed, "data: ")
+		if !json.Valid([]byte(data)) {
+			t.Errorf("line %d: invalid JSON: %s", i+1, data)
+		}
+		// Next line must be blank (SSE event separator) or end of stream.
+		if i+1 >= len(lines) {
+			continue
+		}
+		next := strings.TrimRight(lines[i+1], "\r")
+		if next != "" {
+			t.Errorf("line %d: data: immediately followed by non-blank line %q (missing blank line separator)", i+1, next)
+		}
 	}
 }
 
