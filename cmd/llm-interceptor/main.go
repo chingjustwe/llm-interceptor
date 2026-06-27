@@ -154,7 +154,15 @@ func main() {
 		defer exporter.Shutdown(ctx)
 	}
 	if cfg.Plugins.CostTracker.Enabled {
-		pluginList = append(pluginList, plugins.NewCostTracker(st))
+		ct := plugins.NewCostTracker(st)
+		if len(cfg.Plugins.CostTracker.Prices) > 0 {
+			prices := make(map[string]plugins.PriceEntry, len(cfg.Plugins.CostTracker.Prices))
+			for model, p := range cfg.Plugins.CostTracker.Prices {
+				prices[model] = plugins.PriceEntry{InputPerM: p.InputPerM, OutputPerM: p.OutputPerM}
+			}
+			ct.SetPrices(prices)
+		}
+		pluginList = append(pluginList, ct)
 	}
 	if cfg.Plugins.Budget.MaxCostPerSession > 0 || cfg.Plugins.Budget.MaxCostPerDay > 0 {
 		pluginList = append(pluginList, plugins.NewBudgetPlugin(st,

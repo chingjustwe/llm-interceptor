@@ -32,9 +32,18 @@ type PluginConfig struct {
 	ToolPolicy   ToolPolicyPluginConfig  `yaml:"tool-policy"`
 }
 
-// CostTrackerPluginConfig enables the cost-tracking plugin.
+// PriceConfig defines per-million-token pricing for a single model.
+type PriceConfig struct {
+	InputPerM  float64 `yaml:"input_per_m"`
+	OutputPerM float64 `yaml:"output_per_m"`
+}
+
+// CostTrackerPluginConfig enables the cost-tracking plugin and optionally
+// overrides per-model pricing. The key is the model name as reported in
+// the LLM response (e.g. "deepseek-v4-flash").
 type CostTrackerPluginConfig struct {
-	Enabled bool `yaml:"enabled"`
+	Enabled bool                  `yaml:"enabled"`
+	Prices  map[string]PriceConfig `yaml:"prices,omitempty"`
 }
 
 // BudgetPluginConfig sets per-session and per-day cost limits in USD.

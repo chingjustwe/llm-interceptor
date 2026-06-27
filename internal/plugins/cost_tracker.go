@@ -12,24 +12,27 @@ import (
 	"github.com/chingjustwe/llm-interceptor/internal/state"
 )
 
-// priceEntry holds per-million-token prices for a model.
-type priceEntry struct {
+// PriceEntry holds per-million-token prices for a model.
+type PriceEntry struct {
 	InputPerM  float64
 	OutputPerM float64
 }
 
-// Default per-million-token prices for Anthropic models, keyed by model ID.
-// Prices are sourced from https://docs.anthropic.com/en/docs/about-claude/pricing.
-var defaultPrices = map[string]struct {
-	InputPerM  float64
-	OutputPerM float64
-}{
+// Default per-million-token prices for Anthropic and DeepSeek models, keyed by
+// model ID. Anthropic prices from https://docs.anthropic.com/en/docs/about-claude/pricing.
+// DeepSeek prices from https://api-docs.deepseek.com/quick_start/pricing.
+var defaultPrices = map[string]PriceEntry{
+	// Anthropic models
 	"claude-sonnet-4-6":               {InputPerM: 3.0, OutputPerM: 15.0},
 	"claude-sonnet-4-20250506":        {InputPerM: 3.0, OutputPerM: 15.0},
 	"claude-3-5-sonnet-20241022":      {InputPerM: 3.0, OutputPerM: 15.0},
 	"claude-3-opus-20240229":          {InputPerM: 15.0, OutputPerM: 75.0},
 	"claude-3-haiku-20240307":         {InputPerM: 0.25, OutputPerM: 1.25},
 	"claude-3-5-haiku-20241022":       {InputPerM: 0.25, OutputPerM: 1.25},
+	// DeepSeek models
+	"deepseek-chat":                   {InputPerM: 0.27, OutputPerM: 1.10},
+	"deepseek-reasoner":               {InputPerM: 0.55, OutputPerM: 2.19},
+	"deepseek-v4-flash":               {InputPerM: 0.50, OutputPerM: 2.00},
 }
 
 // CostTracker implements the Plugin interface to track LLM usage costs per
@@ -40,15 +43,15 @@ type CostTracker struct {
 	state    state.Backend
 	mu       sync.RWMutex
 	sessions map[string]float64
-	prices   map[string]priceEntry
+	prices   map[string]PriceEntry
 }
 
 // NewCostTracker creates a CostTracker with the given state backend (may be
-// nil for in-memory-only tracking) and default Anthropic pricing.
+// nil for in-memory-only tracking) and default pricing (Anthropic + DeepSeek).
 func NewCostTracker(st state.Backend) *CostTracker {
-	prices := make(map[string]priceEntry, len(defaultPrices))
+	prices := make(map[string]PriceEntry, len(defaultPrices))
 	for k, v := range defaultPrices {
-		prices[k] = priceEntry(v)
+		prices[k] = v
 	}
 	return &CostTracker{
 		state:    st,
@@ -117,7 +120,7 @@ func (c *CostTracker) SessionCost(sessionID string) float64 {
 
 // SetPrices replaces the current price table. Useful for runtime updates from
 // configuration reloads or admin API endpoints.
-func (c *CostTracker) SetPrices(prices map[string]priceEntry) {
+func (c *CostTracker) SetPrices(prices map[string]PriceEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.prices = prices
