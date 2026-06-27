@@ -46,9 +46,10 @@ func (r *RateLimitPlugin) OnRequest(ctx *plugin.RequestContext) (*plugin.HookRes
 		count, err := r.state.IncrementWithTTL(ctx.Context, "ratelimit:requests:global", 1, 60_000)
 		if err == nil && count > int64(r.reqPerMin) {
 			return &plugin.HookResult{
-				Block:      true,
-				Reason:     fmt.Sprintf("rate limit exceeded: max %d requests/min", r.reqPerMin),
-				StatusCode: 429,
+				Block:         true,
+				Reason:        fmt.Sprintf("rate limit exceeded: max %d requests/min", r.reqPerMin),
+				StatusCode:    429,
+				RetryAfterSec: 60,
 			}, nil
 		}
 	}
@@ -58,9 +59,10 @@ func (r *RateLimitPlugin) OnRequest(ctx *plugin.RequestContext) (*plugin.HookRes
 		count, err := r.state.Get(ctx.Context, "ratelimit:tokens:global")
 		if err == nil && count > int64(r.tokPerMin) {
 			return &plugin.HookResult{
-				Block:      true,
-				Reason:     fmt.Sprintf("token rate limit exceeded: max %d tokens/min", r.tokPerMin),
-				StatusCode: 429,
+				Block:         true,
+				Reason:        fmt.Sprintf("token rate limit exceeded: max %d tokens/min", r.tokPerMin),
+				StatusCode:    429,
+				RetryAfterSec: 60,
 			}, nil
 		}
 	}

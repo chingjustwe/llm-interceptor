@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -57,11 +58,13 @@ func anthropicErrorType(statusCode int) string {
 
 // writeAnthropicError writes an error response in Anthropic API JSON format
 // so that Anthropic SDK clients can parse the error and display a meaningful
-// message to the user. Note: Retry-After is intentionally omitted here so that
-// governance blocks (budget, rate-limit, tool-policy) display the error message
-// to the user rather than triggering silent retries.
-func writeAnthropicError(w http.ResponseWriter, message string, statusCode int) {
+// message to the user. If retryAfterSec > 0, a Retry-After header is set so
+// the client can back off before retrying (used by rate-limit, NOT by budget).
+func writeAnthropicError(w http.ResponseWriter, message string, statusCode int, retryAfterSec int) {
 	w.Header().Set("Content-Type", "application/json")
+	if retryAfterSec > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSec))
+	}
 	w.WriteHeader(statusCode)
 	json.NewEncoder(w).Encode(map[string]any{
 		"type": "error",
@@ -261,12 +264,12 @@ func main() {
 		hookResult, err := disp.ExecuteOnRequest(reqCtx)
 		if err != nil {
 			log.Printf("plugin error: %v", err)
-			writeAnthropicError(w, "internal error", http.StatusInternalServerError)
+			writeAnthropicError(w, "internal error", http.StatusInternalServerError, 0)
 			return
 		}
 		if hookResult != nil && hookResult.Block {
 			log.Printf("request blocked: %s (status=%d)", hookResult.Reason, hookResult.StatusCode)
-			writeAnthropicError(w, hookResult.Reason, hookResult.StatusCode)
+			writeAnthropicError(w, hookResult.Reason, hookResult.StatusCode, hookResult.RetryAfterSec)
 			return
 		}
 
