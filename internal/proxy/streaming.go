@@ -152,17 +152,22 @@ func streamAndCollect(upstreamResp *http.Response, w http.ResponseWriter, isTool
 		case "content_block_stop":
 			if blockedIdx >= 0 {
 				if idx, ok := raw["index"].(float64); ok && int(idx) == blockedIdx {
-					// The blocked tool_use stream just ended. Replace with
-					// a text block explaining the policy.
-					blockedMsg := "Tool call blocked by interceptor policy — the tool you attempted to use is not available in this session."
-					discardPending()
-					writeSSE(w, flusher, "event: content_block_start")
-					writeSSE(w, flusher, fmt.Sprintf(`data: {"type":"content_block_start","index":%d,"content_block":{"type":"text","text":%q}}`, blockedIdx, blockedMsg))
-					writeSSE(w, flusher, "") // blank line = SSE event separator
-					writeSSE(w, flusher, "event: content_block_stop")
-					writeSSE(w, flusher, fmt.Sprintf(`data: {"type":"content_block_stop","index":%d}`, blockedIdx))
-					respBody.WriteString(blockedMsg)
-					blockedIdx = -1
+				// The blocked tool_use stream just ended. Replace with
+				// a text block explaining the policy. The text is delivered
+				// via content_block_delta events (per Anthropic API spec,
+				// content_block_start text is always ""; SDKs ignore it).
+				blockedMsg := "Tool call blocked by interceptor policy — the tool you attempted to use is not available in this session."
+				discardPending()
+				writeSSE(w, flusher, "event: content_block_start")
+				writeSSE(w, flusher, fmt.Sprintf(`data: {"type":"content_block_start","index":%d,"content_block":{"type":"text","text":""}}`, blockedIdx))
+				writeSSE(w, flusher, "") // blank line = SSE event separator
+				writeSSE(w, flusher, "event: content_block_delta")
+				writeSSE(w, flusher, fmt.Sprintf(`data: {"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":%q}}`, blockedIdx, blockedMsg))
+				writeSSE(w, flusher, "") // blank line
+				writeSSE(w, flusher, "event: content_block_stop")
+				writeSSE(w, flusher, fmt.Sprintf(`data: {"type":"content_block_stop","index":%d}`, blockedIdx))
+				respBody.WriteString(blockedMsg)
+				blockedIdx = -1
 					continue
 				}
 			}
