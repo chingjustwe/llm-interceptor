@@ -272,9 +272,9 @@ func main() {
 			return
 		}
 		if hookResult != nil && hookResult.Block {
-			log.Printf("request blocked: %s (status=%d) [req=%s session=%s agent=%s]",
+			log.Printf("request blocked: %s (status=%d) [req=%s session=%s]",
 				hookResult.Reason, hookResult.StatusCode,
-				reqCtx.ID, reqCtx.SessionID, reqCtx.AgentID)
+				reqCtx.ID, reqCtx.SessionID)
 			writeAnthropicError(w, hookResult.Reason, hookResult.StatusCode, hookResult.RetryAfterSec, hookResult.ErrorType)
 			return
 		}
