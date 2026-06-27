@@ -267,12 +267,14 @@ func main() {
 
 		hookResult, err := disp.ExecuteOnRequest(reqCtx)
 		if err != nil {
-			log.Printf("plugin error: %v", err)
+			log.Printf("plugin error: %v [req=%s session=%s]", err, reqCtx.ID, reqCtx.SessionID)
 			writeAnthropicError(w, "internal error", http.StatusInternalServerError, 0, "")
 			return
 		}
 		if hookResult != nil && hookResult.Block {
-			log.Printf("request blocked: %s (status=%d)", hookResult.Reason, hookResult.StatusCode)
+			log.Printf("request blocked: %s (status=%d) [req=%s session=%s agent=%s]",
+				hookResult.Reason, hookResult.StatusCode,
+				reqCtx.ID, reqCtx.SessionID, reqCtx.AgentID)
 			writeAnthropicError(w, hookResult.Reason, hookResult.StatusCode, hookResult.RetryAfterSec, hookResult.ErrorType)
 			return
 		}
