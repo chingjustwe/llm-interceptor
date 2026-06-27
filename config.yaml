@@ -7,12 +7,18 @@ log:
   response_body: false
 
 storage:
-  type: sqlite
-  sqlite:
-    path: "~/.llm-interceptor/data.db"
+  #type: sqlite
+  #sqlite:
+  #  path: "~/.llm-interceptor/data.db"
+  type: postgres
+  postgres:
+    connection_string: "postgres://llmproxy:llmproxy@localhost:5432/llmproxy?sslmode=disable"
 
 state_store:
-  type: memory
+  #type: memory
+  type: redis
+  redis:
+    url: "redis://:mypassword@localhost:6379/0"
 
 plugins:
   otel-exporter:
@@ -23,8 +29,11 @@ plugins:
   cost-tracker:
     enabled: true
   budget:
-    max_cost_per_session: 0.50
+    max_cost_per_session: 0.01
+    max_cost_per_day: 0.02
   rate-limit:
-    requests_per_minute: 5
+    requests_per_minute: 50
+    tokens_per_minute: 100000
   tool-policy:
     blocked_tools: ["computer", "bash"]
+    allowed_tools: []

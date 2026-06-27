@@ -25,10 +25,12 @@ func TestCostTracker_TracksCost(t *testing.T) {
 	}
 }
 
-func TestCostTracker_UnknownModelReturnsZero(t *testing.T) {
+func TestCostTracker_UnknownModelUsesFallback(t *testing.T) {
 	tracker := NewCostTracker(nil)
+	// 150 tokens at $2/M = 0.0003
 	cost := tracker.CalculateCost("nonexistent-model", 100, 50)
-	if cost != 0 {
-		t.Fatalf("expected 0 for unknown model, got %f", cost)
+	expected := 150.0 / 1_000_000 * 2.0
+	if cost != expected {
+		t.Fatalf("expected %f for unknown model, got %f", expected, cost)
 	}
 }

@@ -40,23 +40,26 @@ var defaultPrices = map[string]PriceEntry{
 // stores session-level costs in memory, and persists cumulative costs to the
 // state backend for cross-process visibility.
 type CostTracker struct {
-	state    state.Backend
-	mu       sync.RWMutex
-	sessions map[string]float64
-	prices   map[string]PriceEntry
+	state          state.Backend
+	mu             sync.RWMutex
+	sessions       map[string]float64
+	prices         map[string]PriceEntry
+	defaultPerM    float64 // fallback $/1M tokens for unknown models (input + output combined)
 }
 
 // NewCostTracker creates a CostTracker with the given state backend (may be
 // nil for in-memory-only tracking) and default pricing (Anthropic + DeepSeek).
+// Unknown models fall back to defaultPerM ($/1M tokens, combined input+output).
 func NewCostTracker(st state.Backend) *CostTracker {
 	prices := make(map[string]PriceEntry, len(defaultPrices))
 	for k, v := range defaultPrices {
 		prices[k] = v
 	}
 	return &CostTracker{
-		state:    st,
-		sessions: make(map[string]float64),
-		prices:   prices,
+		state:       st,
+		sessions:    make(map[string]float64),
+		prices:      prices,
+		defaultPerM: 2.0,
 	}
 }
 
@@ -96,14 +99,16 @@ func (c *CostTracker) OnResponse(ctx *plugin.ResponseContext) error {
 }
 
 // CalculateCost computes the USD cost for a given model and token counts using
-// the tracker's current price table. Returns 0 if the model is unknown.
+// the tracker's current price table. If the model is unknown, it falls back
+// to defaultPerM (a blended $/1M tokens for both input and output).
 // Safe for concurrent use — holds a read lock on the price table.
 func (c *CostTracker) CalculateCost(model string, inputTokens, outputTokens int) float64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	p, ok := c.prices[model]
 	if !ok {
-		return 0
+		total := float64(inputTokens + outputTokens)
+		return total / 1_000_000 * c.defaultPerM
 	}
 	inputCost := float64(inputTokens) / 1_000_000 * p.InputPerM
 	outputCost := float64(outputTokens) / 1_000_000 * p.OutputPerM
