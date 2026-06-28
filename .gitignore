@@ -41,6 +41,9 @@ skills-lock.json
 # Docs - superpowers
 docs/superpowers/
 
+# Docs
+docs/
+
 # Test artifacts
 test-results/
 
