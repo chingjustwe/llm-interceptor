@@ -33,7 +33,7 @@ func TestProxy_ForwardsRequestAndReturnsResponse(t *testing.T) {
 	pluginResp, err := target.HandleRequest([]byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}]}`), map[string]string{
 		"x-api-key":    "test-key",
 		"content-type": "application/json",
-	})
+	}, "")
 	if err != nil {
 		t.Fatalf("HandleRequest failed: %v", err)
 	}
@@ -71,10 +71,11 @@ func TestProxy_StreamingResponse(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	respBody, usage, tools, stopReason, _, err := target.HandleRequestStream(
+	respBody, usage, tools, stopReason, _, _, err := target.HandleRequestStream(
 		[]byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"stream":true}`),
 		map[string]string{"x-api-key": "test-key"},
 		rec,
+		"",
 		nil,
 	)
 	if string(respBody) != "Hello there" {
@@ -125,10 +126,11 @@ func TestStreamAndCollect_Passthrough(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	respBody, usage, tools, stopReason, _, err := target.HandleRequestStream(
+	respBody, usage, tools, stopReason, _, _, err := target.HandleRequestStream(
 		[]byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"stream":true}`),
 		map[string]string{"x-api-key": "test-key"},
 		rec,
+		"",
 		nil,
 	)
 	if err != nil {
@@ -312,10 +314,11 @@ func TestHandleRequestStream_ToolBlockedFollowUp(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	respBody, usage, tools, stopReason, _, err := target.HandleRequestStream(
-		[]byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"list files with Bash"}],"stream":true}`),
+	respBody, usage, tools, stopReason, _, _, err := target.HandleRequestStream(
+		[]byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"stream":true}`),
 		map[string]string{"x-api-key": "test-key"},
 		rec,
+		"",
 		isToolBlocked,
 	)
 	if err != nil {
@@ -385,10 +388,11 @@ func TestHandleRequestStream_FollowUpBudgetExhausted(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	_, _, tools, _, _, err := target.HandleRequestStream(
+	_, _, tools, _, _, _, err := target.HandleRequestStream(
 		[]byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"stream":true}`),
 		map[string]string{"x-api-key": "test-key"},
 		rec,
+		"",
 		isToolBlocked,
 	)
 	if err != nil {
@@ -403,5 +407,91 @@ func TestHandleRequestStream_FollowUpBudgetExhausted(t *testing.T) {
 	// 4 requests: original + 3 follow-ups (budget=3, one per retry).
 	if requestCount != 4 {
 		t.Fatalf("expected 4 requests (original + 3 follow-ups), got %d", requestCount)
+	}
+}
+
+func TestExtractRequestParams(t *testing.T) {
+	body := []byte(`{"model":"claude","messages":[{"role":"user","content":"hi"}],"stream":true,"temperature":0.7,"top_p":0.9,"max_tokens":100}`)
+	params := ExtractRequestParams(body)
+	if params == nil {
+		t.Fatal("expected non-nil params")
+	}
+	if _, ok := params["messages"]; ok {
+		t.Error("messages should be removed")
+	}
+	if _, ok := params["stream"]; ok {
+		t.Error("stream should be removed")
+	}
+	if _, ok := params["model"]; ok {
+		t.Error("model should be removed")
+	}
+	if params["temperature"] != 0.7 {
+		t.Errorf("expected temperature 0.7, got %v", params["temperature"])
+	}
+	if params["top_p"] != 0.9 {
+		t.Errorf("expected top_p 0.9, got %v", params["top_p"])
+	}
+	if params["max_tokens"] != float64(100) {
+		t.Errorf("expected max_tokens 100, got %v", params["max_tokens"])
+	}
+}
+
+func TestExtractSystemPrompt(t *testing.T) {
+	// Anthropic format
+	body := []byte(`{"model":"claude","system":"You are helpful.","messages":[{"role":"user","content":"hi"}]}`)
+	sp := ExtractSystemPrompt(body)
+	if sp == nil || *sp != "You are helpful." {
+		t.Fatalf("expected 'You are helpful.', got %v", sp)
+	}
+
+	// OpenAI format with system role
+	body = []byte(`{"model":"gpt-4","messages":[{"role":"system","content":"You are GPT."},{"role":"user","content":"hi"}]}`)
+	sp = ExtractSystemPrompt(body)
+	if sp == nil || *sp != "You are GPT." {
+		t.Fatalf("expected 'You are GPT.', got %v", sp)
+	}
+
+	// OpenAI format with developer role
+	body = []byte(`{"model":"gpt-4","messages":[{"role":"developer","content":"You are dev."},{"role":"user","content":"hi"}]}`)
+	sp = ExtractSystemPrompt(body)
+	if sp == nil || *sp != "You are dev." {
+		t.Fatalf("expected 'You are dev.', got %v", sp)
+	}
+
+	// No system prompt
+	body = []byte(`{"model":"claude","messages":[{"role":"user","content":"hi"}]}`)
+	sp = ExtractSystemPrompt(body)
+	if sp != nil {
+		t.Fatalf("expected nil, got %v", *sp)
+	}
+}
+
+func TestExtractError(t *testing.T) {
+	// OpenAI format
+	body := []byte(`{"error":{"type":"invalid_request_error","message":"Bad request"}}`)
+	eType, eMsg := ExtractError(body)
+	if eType != "invalid_request_error" || eMsg != "Bad request" {
+		t.Errorf("expected invalid_request_error/Bad request, got %s/%s", eType, eMsg)
+	}
+
+	// Anthropic format
+	body = []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Too fast"}}`)
+	eType, eMsg = ExtractError(body)
+	if eType != "rate_limit_error" || eMsg != "Too fast" {
+		t.Errorf("expected rate_limit_error/Too fast, got %s/%s", eType, eMsg)
+	}
+
+	// No error (success response)
+	body = []byte(`{"id":"msg_123","type":"message","content":[]}`)
+	eType, eMsg = ExtractError(body)
+	if eType != "" || eMsg != "" {
+		t.Errorf("expected empty strings, got %s/%s", eType, eMsg)
+	}
+
+	// Invalid JSON
+	body = []byte(`not json`)
+	eType, eMsg = ExtractError(body)
+	if eType != "" || eMsg != "" {
+		t.Errorf("expected empty strings for invalid json, got %s/%s", eType, eMsg)
 	}
 }

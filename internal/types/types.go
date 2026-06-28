@@ -43,6 +43,15 @@ type StoredRequest struct {
 	DurationMs int64      `json:"duration_ms"`
 	StatusCode int        `json:"status_code"`
 	CreatedAt  int64      `json:"created_at"`
+
+	SystemPrompt    *string  `json:"system_prompt,omitempty"`
+	StopReason      *string  `json:"stop_reason,omitempty"`
+	ErrorType       *string  `json:"error_type,omitempty"`
+	ErrorMessage    *string  `json:"error_message,omitempty"`
+	TTFTMs          *int64   `json:"ttft_ms,omitempty"`
+	Temperature     *float64 `json:"temperature,omitempty"`
+	TopP            *float64 `json:"top_p,omitempty"`
+	RequestParams   *string  `json:"request_params,omitempty"`
 }
 
 // RequestFilter defines the available filter parameters for querying stored
@@ -55,4 +64,10 @@ type RequestFilter struct {
 	To        *int64
 	Limit     int
 	Offset    int
+
+	StopReason  *string
+	ErrorType   *string
+	MinDuration *int64
+	MaxDuration *int64
+	StatusCodes []int
 }

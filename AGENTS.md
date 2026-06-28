@@ -24,7 +24,7 @@ internal/
 ├── plugins/                Built-in plugins
 ├── api/                    REST API + SSE for web UI
 ├── router/                 Mode detection + provider routing
-└── translate/              Protocol translation
+└── translate/              Protocol translation (Anthropic ↔ OpenAI, streaming SSE)
 deploy/                     Docker Compose extras (PostgreSQL, Redis, OTel)
 Dockerfile                  Multi-stage Docker build
 docker-compose.yml          One-click startup with Docker Compose

@@ -86,3 +86,83 @@ func TestSelectProvider_NoMatch(t *testing.T) {
 		t.Fatalf("expected nil provider for unmatched model, got %v", p.Name())
 	}
 }
+
+func TestNegotiate_AnthropicProvider(t *testing.T) {
+	anthropic := NewHTTPProvider("anthropic", "https://api.anthropic.com", "claude-*", "sk-ant-test")
+	openai := NewHTTPProvider("openai", "https://api.openai.com", "gpt-*", "sk-test")
+	r := New([]Provider{anthropic, openai}, "https://api.anthropic.com")
+
+	route := r.Negotiate("claude-sonnet-4", "/v1/messages")
+	if route == nil {
+		t.Fatal("expected non-nil route for claude model")
+	}
+	if route.ProviderName != "anthropic" {
+		t.Fatalf("expected anthropic provider, got %s", route.ProviderName)
+	}
+	if route.InboundProtocol != ProtocolAnthropic {
+		t.Fatalf("expected inbound ProtocolAnthropic, got %s", route.InboundProtocol)
+	}
+	if route.OutboundProtocol != ProtocolAnthropic {
+		t.Fatalf("expected outbound ProtocolAnthropic, got %s", route.OutboundProtocol)
+	}
+	if route.NeedsTranslation {
+		t.Fatal("expected no translation needed for anthropic->anthropic")
+	}
+	if route.BaseURL != "https://api.anthropic.com" {
+		t.Fatalf("expected base URL https://api.anthropic.com, got %s", route.BaseURL)
+	}
+	if route.APIKey != "sk-ant-test" {
+		t.Fatalf("expected API key sk-ant-test, got %s", route.APIKey)
+	}
+}
+
+func TestNegotiate_OpenAIInboundAnthropicProvider(t *testing.T) {
+	anthropic := NewHTTPProvider("anthropic", "https://api.anthropic.com", "claude-*", "sk-ant-test")
+	r := New([]Provider{anthropic}, "https://api.anthropic.com")
+
+	route := r.Negotiate("claude-sonnet-4", "/v1/chat/completions")
+	if route == nil {
+		t.Fatal("expected non-nil route for claude model with OpenAI path")
+	}
+	if route.InboundProtocol != ProtocolOpenAI {
+		t.Fatalf("expected inbound ProtocolOpenAI, got %s", route.InboundProtocol)
+	}
+	if route.OutboundProtocol != ProtocolAnthropic {
+		t.Fatalf("expected outbound ProtocolAnthropic, got %s", route.OutboundProtocol)
+	}
+	if !route.NeedsTranslation {
+		t.Fatal("expected translation needed for openai->anthropic")
+	}
+}
+
+func TestNegotiate_OpenAIProvider(t *testing.T) {
+	openai := NewHTTPProvider("openai", "https://api.openai.com", "gpt-*", "sk-test")
+	r := New([]Provider{openai}, "https://api.anthropic.com")
+
+	route := r.Negotiate("gpt-4", "/v1/chat/completions")
+	if route == nil {
+		t.Fatal("expected non-nil route for gpt model")
+	}
+	if route.ProviderName != "openai" {
+		t.Fatalf("expected openai provider, got %s", route.ProviderName)
+	}
+	if route.InboundProtocol != ProtocolOpenAI {
+		t.Fatalf("expected inbound ProtocolOpenAI, got %s", route.InboundProtocol)
+	}
+	if route.OutboundProtocol != ProtocolOpenAI {
+		t.Fatalf("expected outbound ProtocolOpenAI, got %s", route.OutboundProtocol)
+	}
+	if route.NeedsTranslation {
+		t.Fatal("expected no translation needed for openai->openai")
+	}
+}
+
+func TestNegotiate_NoMatch(t *testing.T) {
+	openai := NewHTTPProvider("openai", "https://api.openai.com", "gpt-*", "sk-test")
+	r := New([]Provider{openai}, "https://api.anthropic.com")
+
+	route := r.Negotiate("llama-3", "/v1/messages")
+	if route != nil {
+		t.Fatalf("expected nil route for unmatched model, got %+v", route)
+	}
+}

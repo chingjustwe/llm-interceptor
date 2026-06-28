@@ -6,6 +6,7 @@ package router
 
 import (
 	"net/http"
+	"strings"
 )
 
 // keyPrefix is the distinctive prefix that identifies a managed API key.
@@ -73,4 +74,58 @@ func (r *Router) SelectProvider(model string) Provider {
 // DefaultURL returns the fallback upstream URL for passthrough mode.
 func (r *Router) DefaultURL() string {
 	return r.defaultURL
+}
+
+// Protocol represents the API protocol for an LLM request.
+type Protocol string
+
+const (
+	ProtocolAnthropic Protocol = "anthropic"
+	ProtocolOpenAI    Protocol = "openai"
+)
+
+// NegotiatedRoute holds the selected provider and whether protocol
+// translation is needed between the inbound and outbound formats.
+type NegotiatedRoute struct {
+	ProviderName     string
+	BaseURL          string
+	APIKey           string
+	InboundProtocol  Protocol
+	OutboundProtocol Protocol
+	NeedsTranslation bool
+}
+
+// Negotiate determines the appropriate provider and protocol for a given
+// model and inbound path. Returns nil if no matching provider is found.
+func (r *Router) Negotiate(model string, inboundPath string) *NegotiatedRoute {
+	inbound := ProtocolAnthropic
+	if inboundPath == "/v1/chat/completions" {
+		inbound = ProtocolOpenAI
+	}
+
+	provider := r.SelectProvider(model)
+	if provider == nil {
+		return nil
+	}
+
+	outbound := ProtocolOpenAI
+	name := provider.Name()
+	if strings.Contains(strings.ToLower(name), "anthropic") ||
+		strings.Contains(strings.ToLower(name), "claude") {
+		outbound = ProtocolAnthropic
+	}
+
+	hp, ok := provider.(*HTTPProvider)
+	if !ok {
+		return nil
+	}
+
+	return &NegotiatedRoute{
+		ProviderName:     name,
+		BaseURL:          hp.BaseURL(),
+		APIKey:           hp.APIKey(),
+		InboundProtocol:  inbound,
+		OutboundProtocol: outbound,
+		NeedsTranslation: inbound != outbound,
+	}
 }

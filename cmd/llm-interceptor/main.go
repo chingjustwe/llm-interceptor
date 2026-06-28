@@ -276,7 +276,7 @@ func main() {
 	broker := api.NewSSEBroker()
 	r.Get("/api/events", broker.ServeHTTP)
 
-	r.Post("/v1/messages", func(w http.ResponseWriter, r *http.Request) {
+	llmHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
@@ -300,6 +300,12 @@ func main() {
 		reqCtx.Body = body
 		reqCtx.SessionID = r.Header.Get("x-claude-code-session-id")
 		reqCtx.AgentID = r.Header.Get("x-claude-code-agent-id")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/messages"):
+			reqCtx.APIFormat = "anthropic"
+		case strings.HasSuffix(r.URL.Path, "/v1/chat/completions"):
+			reqCtx.APIFormat = "openai"
+		}
 		reqCtx.Headers = make(map[string]string)
 		for k, v := range r.Header {
 			reqCtx.Headers[k] = strings.Join(v, ", ")
@@ -324,6 +330,7 @@ func main() {
 		respCtx.RequestID = reqCtx.ID
 		respCtx.SessionID = reqCtx.SessionID
 		respCtx.Metadata = reqCtx.Metadata
+		respCtx.APIFormat = reqCtx.APIFormat
 
 		var model struct {
 			Model string `json:"model"`
@@ -364,12 +371,14 @@ func main() {
 			}
 		}
 
+		var reqTTFTMs *int64
 		if isStream {
 			var isToolBlocked func(name string) bool
 			if toolPolicy != nil {
 				isToolBlocked = toolPolicy.IsBlocked
 			}
-			respBody, usage, toolCalls, stopReason, duration, err := activeTarget.HandleRequestStream(body, reqCtx.Headers, w, isToolBlocked)
+			respBody, usage, toolCalls, stopReason, ttftMs, duration, err := activeTarget.HandleRequestStream(body, reqCtx.Headers, w, r.URL.Path, isToolBlocked)
+			reqTTFTMs = &ttftMs
 			if err != nil {
 				log.Printf("proxy stream error: %v", err)
 				return
@@ -385,7 +394,7 @@ func main() {
 			respCtx.DurationMs = duration
 			respCtx.StatusCode = http.StatusOK
 		} else {
-			pr, err := activeTarget.HandleRequest(body, reqCtx.Headers)
+			pr, err := activeTarget.HandleRequest(body, reqCtx.Headers, r.URL.Path)
 			if err != nil {
 				log.Printf("proxy error: %v", err)
 				http.Error(w, "upstream error", http.StatusBadGateway)
@@ -435,6 +444,35 @@ func main() {
 				StatusCode: respCtx.StatusCode,
 				CreatedAt:  time.Now().UnixMilli(),
 			}
+			storedReq.SystemPrompt = proxy.ExtractSystemPrompt(body)
+			if respCtx.StopReason != "" {
+				storedReq.StopReason = &respCtx.StopReason
+			}
+			if respCtx.StatusCode >= 400 {
+				eType, eMsg := proxy.ExtractError(respCtx.Body)
+				if eType != "" {
+					storedReq.ErrorType = &eType
+				}
+				if eMsg != "" {
+					storedReq.ErrorMessage = &eMsg
+				}
+			}
+			if isStream {
+				storedReq.TTFTMs = reqTTFTMs
+			}
+			params := proxy.ExtractRequestParams(body)
+			if params != nil {
+				if t, ok := params["temperature"].(float64); ok {
+					storedReq.Temperature = &t
+				}
+				if tp, ok := params["top_p"].(float64); ok {
+					storedReq.TopP = &tp
+				}
+				if pJSON, err := json.Marshal(params); err == nil {
+					pStr := string(pJSON)
+					storedReq.RequestParams = &pStr
+				}
+			}
 			if err := store.SaveRequest(context.Background(), storedReq); err != nil {
 				log.Printf("failed to save request: %v", err)
 			}
@@ -442,6 +480,7 @@ func main() {
 			broker.Publish(storedReq)
 		}()
 	})
+	r.Post("/v1/chat/completions", llmHandler)
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

@@ -6,6 +6,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -69,17 +70,76 @@ func NewPostgres(connString string) (*PostgresBackend, error) {
 		pool.Close()
 		return nil, fmt.Errorf("create table: %w", err)
 	}
+	for _, stmt := range []string{
+		"ALTER TABLE requests ADD COLUMN IF NOT EXISTS system_prompt TEXT",
+		"ALTER TABLE requests ADD COLUMN IF NOT EXISTS stop_reason TEXT",
+		"ALTER TABLE requests ADD COLUMN IF NOT EXISTS error_type TEXT",
+		"ALTER TABLE requests ADD COLUMN IF NOT EXISTS error_message TEXT",
+		"ALTER TABLE requests ADD COLUMN IF NOT EXISTS ttft_ms INTEGER",
+		"ALTER TABLE requests ADD COLUMN IF NOT EXISTS temperature DOUBLE PRECISION",
+		"ALTER TABLE requests ADD COLUMN IF NOT EXISTS top_p DOUBLE PRECISION",
+		"ALTER TABLE requests ADD COLUMN IF NOT EXISTS request_params TEXT",
+	} {
+		if _, err := pool.Exec(context.Background(), stmt); err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("migrate column: %w", err)
+		}
+	}
+	if _, err := pool.Exec(context.Background(), "CREATE INDEX IF NOT EXISTS idx_requests_stop_reason ON requests(stop_reason)"); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("create stop_reason index: %w", err)
+	}
+	if _, err := pool.Exec(context.Background(), "CREATE INDEX IF NOT EXISTS idx_requests_error_type ON requests(error_type)"); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("create error_type index: %w", err)
+	}
 	return &PostgresBackend{pool: pool}, nil
 }
 
 // SaveRequest inserts a new LLM request record into the database, including
 // metadata, token usage, and the original request/response bodies.
 func (p *PostgresBackend) SaveRequest(ctx context.Context, req *types.StoredRequest) error {
+	var (
+		systemPrompt  interface{} = nil
+		stopReason    interface{} = nil
+		errorType     interface{} = nil
+		errorMessage  interface{} = nil
+		ttftMs        interface{} = nil
+		temperature   interface{} = nil
+		topP          interface{} = nil
+		requestParams interface{} = nil
+	)
+	if req.SystemPrompt != nil {
+		systemPrompt = *req.SystemPrompt
+	}
+	if req.StopReason != nil {
+		stopReason = *req.StopReason
+	}
+	if req.ErrorType != nil {
+		errorType = *req.ErrorType
+	}
+	if req.ErrorMessage != nil {
+		errorMessage = *req.ErrorMessage
+	}
+	if req.TTFTMs != nil {
+		ttftMs = *req.TTFTMs
+	}
+	if req.Temperature != nil {
+		temperature = *req.Temperature
+	}
+	if req.TopP != nil {
+		topP = *req.TopP
+	}
+	if req.RequestParams != nil {
+		requestParams = *req.RequestParams
+	}
 	_, err := p.pool.Exec(ctx,
 		`INSERT INTO requests (id, session_id, model, method, path, request_body, response_body,
 		 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-		 duration_ms, status_code, created_at) 
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+		 duration_ms, status_code, created_at,
+		 system_prompt, stop_reason, error_type, error_message, ttft_ms, temperature, top_p, request_params)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+		 $15, $16, $17, $18, $19, $20, $21, $22)`,
 		req.ID, req.SessionID, req.Model, req.Method, req.Path,
 		req.Request, req.Response,
 		req.Usage.InputTokens, req.Usage.OutputTokens,
@@ -87,6 +147,8 @@ func (p *PostgresBackend) SaveRequest(ctx context.Context, req *types.StoredRequ
 		req.DurationMs, req.StatusCode,
 		// CreatedAt is Unix milliseconds; convert to time.Time for the TIMESTAMP column.
 		time.UnixMilli(req.CreatedAt),
+		systemPrompt, stopReason, errorType, errorMessage,
+		ttftMs, temperature, topP, requestParams,
 	)
 	if err != nil {
 		return fmt.Errorf("save request: %w", err)
@@ -100,7 +162,8 @@ func (p *PostgresBackend) GetSessionRequests(ctx context.Context, sessionID stri
 	rows, err := p.pool.Query(ctx,
 		`SELECT id, session_id, model, method, path, request_body, response_body,
 		 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-		 duration_ms, status_code, (EXTRACT(EPOCH FROM created_at) * 1000)::bigint
+		 duration_ms, status_code, (EXTRACT(EPOCH FROM created_at) * 1000)::bigint,
+		 system_prompt, stop_reason, error_type, error_message, ttft_ms, temperature, top_p, request_params
 		 FROM requests WHERE session_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
 		sessionID, limit, offset,
 	)
@@ -115,7 +178,9 @@ func (p *PostgresBackend) GetSessionRequests(ctx context.Context, sessionID stri
 			&r.Request, &r.Response,
 			&r.Usage.InputTokens, &r.Usage.OutputTokens,
 			&r.Usage.CacheReadTokens, &r.Usage.CacheCreationTokens,
-			&r.DurationMs, &r.StatusCode, &r.CreatedAt); err != nil {
+			&r.DurationMs, &r.StatusCode, &r.CreatedAt,
+			&r.SystemPrompt, &r.StopReason, &r.ErrorType, &r.ErrorMessage,
+			&r.TTFTMs, &r.Temperature, &r.TopP, &r.RequestParams); err != nil {
 			return nil, fmt.Errorf("scan session request: %w", err)
 		}
 		results = append(results, r)
@@ -132,7 +197,8 @@ func (p *PostgresBackend) GetSessionRequests(ctx context.Context, sessionID stri
 func (p *PostgresBackend) QueryRequests(ctx context.Context, filter types.RequestFilter) ([]types.StoredRequest, error) {
 	query := `SELECT id, session_id, model, method, path, request_body, response_body,
 		 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-		 duration_ms, status_code, (EXTRACT(EPOCH FROM created_at) * 1000)::bigint
+		 duration_ms, status_code, (EXTRACT(EPOCH FROM created_at) * 1000)::bigint,
+		 system_prompt, stop_reason, error_type, error_message, ttft_ms, temperature, top_p, request_params
 		 FROM requests`
 	var conditions []string
 	var args []any
@@ -157,6 +223,35 @@ func (p *PostgresBackend) QueryRequests(ctx context.Context, filter types.Reques
 		conditions = append(conditions, fmt.Sprintf("created_at <= $%d", argIdx))
 		args = append(args, time.UnixMilli(*filter.To))
 		argIdx++
+	}
+	if filter.StopReason != nil {
+		conditions = append(conditions, fmt.Sprintf("stop_reason = $%d", argIdx))
+		args = append(args, *filter.StopReason)
+		argIdx++
+	}
+	if filter.ErrorType != nil {
+		conditions = append(conditions, fmt.Sprintf("error_type = $%d", argIdx))
+		args = append(args, *filter.ErrorType)
+		argIdx++
+	}
+	if filter.MinDuration != nil {
+		conditions = append(conditions, fmt.Sprintf("duration_ms >= $%d", argIdx))
+		args = append(args, *filter.MinDuration)
+		argIdx++
+	}
+	if filter.MaxDuration != nil {
+		conditions = append(conditions, fmt.Sprintf("duration_ms <= $%d", argIdx))
+		args = append(args, *filter.MaxDuration)
+		argIdx++
+	}
+	if len(filter.StatusCodes) > 0 {
+		placeholders := make([]string, len(filter.StatusCodes))
+		for i, sc := range filter.StatusCodes {
+			placeholders[i] = fmt.Sprintf("$%d", argIdx)
+			args = append(args, sc)
+			argIdx++
+		}
+		conditions = append(conditions, "status_code IN ("+strings.Join(placeholders, ",")+")")
 	}
 	if len(conditions) > 0 {
 		query += " WHERE " + conditions[0]
@@ -188,7 +283,9 @@ func (p *PostgresBackend) QueryRequests(ctx context.Context, filter types.Reques
 			&r.Request, &r.Response,
 			&r.Usage.InputTokens, &r.Usage.OutputTokens,
 			&r.Usage.CacheReadTokens, &r.Usage.CacheCreationTokens,
-			&r.DurationMs, &r.StatusCode, &r.CreatedAt); err != nil {
+			&r.DurationMs, &r.StatusCode, &r.CreatedAt,
+			&r.SystemPrompt, &r.StopReason, &r.ErrorType, &r.ErrorMessage,
+			&r.TTFTMs, &r.Temperature, &r.TopP, &r.RequestParams); err != nil {
 			return nil, fmt.Errorf("scan query result: %w", err)
 		}
 		results = append(results, r)

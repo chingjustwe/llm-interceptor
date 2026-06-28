@@ -27,14 +27,15 @@ internal/
 ├── plugins/                Built-in plugins (otel, cost-tracker, budget, ratelimit, tool-policy)
 ├── api/                    REST API + SSE broker (for web UI)
 ├── router/                 Mode detection + provider routing + key management
-└── translate/              Protocol translation (Anthropic ↔ OpenAI)
+└── translate/              Protocol translation (Anthropic ↔ OpenAI, streaming SSE)
 ui/                         React SPA (Vite + TypeScript + Tailwind)
 ```
 
 ## Implementation Status
 | Phase | What | Status |
 |-------|------|--------|
-| 1 | Core MVP: proxy, plugin framework, config, SQLite, in-memory state | ✅ |
+| 1.A | Enhanced Data Capture: structured fields (temp, top_p, TTFT, error, system prompt), schema migration, API filter params | ✅ |
+| 1.B | OpenAI Chat Completions API: `/v1/chat/completions` endpoint, bidirectional protocol translation, streaming SSE translation, router protocol negotiation | ✅ |
 | 2 | OTel exporter plugin (traces + metrics) | ✅ |
 | 3 | Governance (cost/budget/ratelimit/tool-policy), Redis, PostgreSQL | ✅ |
 | 4 | LLM Router, API key management (bcrypt), protocol translation | ✅ |
@@ -120,7 +121,8 @@ Plugin registration order in `main.go`:
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/v1/messages` | LLM proxy (Anthropic Messages API) |
-| GET | `/api/requests` | List stored requests |
+| POST | `/v1/chat/completions` | LLM proxy (OpenAI Chat Completions API) |
+| GET | `/api/requests` | List stored requests (filters: model, session_id, stop_reason, error_type, min_duration, max_duration, status_code) |
 | GET | `/api/requests/{id}` | Get single request |
 | GET | `/api/sessions` | List session summaries |
 | GET | `/api/sessions/{id}/requests` | Get session's requests |
@@ -145,6 +147,27 @@ Plugin registration order in `main.go`:
 - Commit granularly: one logical change per commit.
 - Run `git push` after each commit.
 
+## Phase 1 Details
+
+### Enhanced Data Capture
+- `StoredRequest` has 8 new pointer fields: `SystemPrompt`, `StopReason`, `ErrorType`, `ErrorMessage`, `TTFTMs`, `Temperature`, `TopP`, `RequestParams`
+- `RequestFilter` has 5 new fields: `StopReason`, `ErrorType`, `MinDuration`, `MaxDuration`, `StatusCodes`
+- SQLite migration uses `PRAGMA user_version`; PG uses `ALTER TABLE ADD COLUMN IF NOT EXISTS`
+- `proxy.ExtractRequestParams` strips `messages`/`stream`/`model` from request body
+- `proxy.ExtractSystemPrompt` checks Anthropic top-level `system` then OpenAI `system`/`developer` role
+- `proxy.ExtractError` handles both OpenAI and Anthropic error formats
+- TTFT tracked in `collectSSE` on first `content_block_delta` (text) or `content_block_start` (tool_use)
+
+### OpenAI Chat Completions
+- Both `/v1/messages` and `/v1/chat/completions` routes handled by same `llmHandler` closure
+- `reqCtx.APIFormat` set via path-based switch (anthropic/openai)
+- `translate.ToOpenAI` handles tools, tool_choice, temperature, top_p, stop_sequences, metadata
+- `translate.AnthropicToOpenAIResponse` maps content blocks + stop_reason + usage details
+- `translate.ToAnthropic` handles tools, tool_choice, response_format, user metadata
+- `translate.OpenAIToAnthropicResponse` maps tool_calls + finish_reason + cached/reasoning tokens
+- `translate/streaming.go` has `SSEEvent`, `StreamParser`/`StreamTranslator` interfaces with bidirectional implementations
+- Router has `Negotiate` method with `NegotiatedRoute` struct for protocol detection
+
 ## Common Gotchas
 - **Module path is all lowercase**: `github.com/chingjustwe/llm-interceptor` — import paths use lowercase `llm-interceptor`
 - **Plugin types differ**: `proxy.UsageData`/`proxy.ToolCall` and `plugin.Usage`/`plugin.ToolCall` are separate types — explicit conversion needed in `main.go`
@@ -154,3 +177,7 @@ Plugin registration order in `main.go`:
 - **~ expansion**: configured via `expandHome()` in `internal/config/config.go`
 - **embed path**: `//go:embed ui/dist/*` is relative to `cmd/llm-interceptor/`
 - **OTel**: uses `gen_ai.*` semantic convention attributes per OpenTelemetry spec
+- **APIFormat**: `plugin.RequestContext`/`ResponseContext` have `APIFormat string` field set by path
+- **Proxy path param**: `HandleRequest`/`HandleRequestStream` now accept `path string` — always pass `r.URL.Path`
+- **TTFT return**: `HandleRequestStream` returns `ttftMs int64` (extra return value before durationMs)
+- **Pointer fields in storage**: SaveRequest uses nil/dereferenced pattern for pointer fields

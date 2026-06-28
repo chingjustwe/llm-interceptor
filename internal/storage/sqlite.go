@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/chingjustwe/llm-interceptor/internal/types"
 	_ "modernc.org/sqlite"
@@ -60,21 +61,92 @@ func NewSQLite(path string) (*SQLiteBackend, error) {
 		db.Close()
 		return nil, fmt.Errorf("create table: %w", err)
 	}
+	var version int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		version = 0
+	}
+	if version < 1 {
+		for _, stmt := range []string{
+			"ALTER TABLE requests ADD COLUMN system_prompt TEXT",
+			"ALTER TABLE requests ADD COLUMN stop_reason TEXT",
+			"ALTER TABLE requests ADD COLUMN error_type TEXT",
+			"ALTER TABLE requests ADD COLUMN error_message TEXT",
+			"ALTER TABLE requests ADD COLUMN ttft_ms INTEGER",
+			"ALTER TABLE requests ADD COLUMN temperature REAL",
+			"ALTER TABLE requests ADD COLUMN top_p REAL",
+			"ALTER TABLE requests ADD COLUMN request_params TEXT",
+		} {
+			if _, err := db.Exec(stmt); err != nil {
+				db.Close()
+				return nil, fmt.Errorf("migrate column: %w", err)
+			}
+		}
+		if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_requests_stop_reason ON requests(stop_reason)"); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("create stop_reason index: %w", err)
+		}
+		if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_requests_error_type ON requests(error_type)"); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("create error_type index: %w", err)
+		}
+		if _, err := db.Exec("PRAGMA user_version = 1"); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("set user_version: %w", err)
+		}
+	}
 	return &SQLiteBackend{db: db}, nil
 }
 
 // SaveRequest inserts a new LLM request record into the database, including
 // metadata, token usage, and the original request/response bodies.
 func (s *SQLiteBackend) SaveRequest(ctx context.Context, req *types.StoredRequest) error {
+	var (
+		systemPrompt  interface{} = nil
+		stopReason    interface{} = nil
+		errorType     interface{} = nil
+		errorMessage  interface{} = nil
+		ttftMs        interface{} = nil
+		temperature   interface{} = nil
+		topP          interface{} = nil
+		requestParams interface{} = nil
+	)
+	if req.SystemPrompt != nil {
+		systemPrompt = *req.SystemPrompt
+	}
+	if req.StopReason != nil {
+		stopReason = *req.StopReason
+	}
+	if req.ErrorType != nil {
+		errorType = *req.ErrorType
+	}
+	if req.ErrorMessage != nil {
+		errorMessage = *req.ErrorMessage
+	}
+	if req.TTFTMs != nil {
+		ttftMs = *req.TTFTMs
+	}
+	if req.Temperature != nil {
+		temperature = *req.Temperature
+	}
+	if req.TopP != nil {
+		topP = *req.TopP
+	}
+	if req.RequestParams != nil {
+		requestParams = *req.RequestParams
+	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO requests (id, session_id, model, method, path, request_body, response_body,
 		 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-		 duration_ms, status_code, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 duration_ms, status_code, created_at,
+		 system_prompt, stop_reason, error_type, error_message, ttft_ms, temperature, top_p, request_params)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		req.ID, req.SessionID, req.Model, req.Method, req.Path,
 		req.Request, req.Response,
 		req.Usage.InputTokens, req.Usage.OutputTokens,
 		req.Usage.CacheReadTokens, req.Usage.CacheCreationTokens,
 		req.DurationMs, req.StatusCode, req.CreatedAt,
+		systemPrompt, stopReason, errorType, errorMessage,
+		ttftMs, temperature, topP, requestParams,
 	)
 	if err != nil {
 		return fmt.Errorf("save request: %w", err)
@@ -88,7 +160,8 @@ func (s *SQLiteBackend) GetSessionRequests(ctx context.Context, sessionID string
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, session_id, model, method, path, request_body, response_body,
 		 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-		 duration_ms, status_code, created_at
+		 duration_ms, status_code, created_at,
+		 system_prompt, stop_reason, error_type, error_message, ttft_ms, temperature, top_p, request_params
 		 FROM requests WHERE session_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`,
 		sessionID, limit, offset,
 	)
@@ -103,7 +176,9 @@ func (s *SQLiteBackend) GetSessionRequests(ctx context.Context, sessionID string
 			&r.Request, &r.Response,
 			&r.Usage.InputTokens, &r.Usage.OutputTokens,
 			&r.Usage.CacheReadTokens, &r.Usage.CacheCreationTokens,
-			&r.DurationMs, &r.StatusCode, &r.CreatedAt); err != nil {
+			&r.DurationMs, &r.StatusCode, &r.CreatedAt,
+			&r.SystemPrompt, &r.StopReason, &r.ErrorType, &r.ErrorMessage,
+			&r.TTFTMs, &r.Temperature, &r.TopP, &r.RequestParams); err != nil {
 			return nil, err
 		}
 		results = append(results, r)
@@ -120,7 +195,8 @@ func (s *SQLiteBackend) GetSessionRequests(ctx context.Context, sessionID string
 func (s *SQLiteBackend) QueryRequests(ctx context.Context, filter types.RequestFilter) ([]types.StoredRequest, error) {
 	query := `SELECT id, session_id, model, method, path, request_body, response_body,
 		 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-		 duration_ms, status_code, created_at FROM requests`
+		 duration_ms, status_code, created_at,
+		 system_prompt, stop_reason, error_type, error_message, ttft_ms, temperature, top_p, request_params FROM requests`
 	var conditions []string
 	var args []any
 
@@ -139,6 +215,30 @@ func (s *SQLiteBackend) QueryRequests(ctx context.Context, filter types.RequestF
 	if filter.To != nil {
 		conditions = append(conditions, "created_at <= ?")
 		args = append(args, *filter.To)
+	}
+	if filter.StopReason != nil {
+		conditions = append(conditions, "stop_reason = ?")
+		args = append(args, *filter.StopReason)
+	}
+	if filter.ErrorType != nil {
+		conditions = append(conditions, "error_type = ?")
+		args = append(args, *filter.ErrorType)
+	}
+	if filter.MinDuration != nil {
+		conditions = append(conditions, "duration_ms >= ?")
+		args = append(args, *filter.MinDuration)
+	}
+	if filter.MaxDuration != nil {
+		conditions = append(conditions, "duration_ms <= ?")
+		args = append(args, *filter.MaxDuration)
+	}
+	if len(filter.StatusCodes) > 0 {
+		placeholders := make([]string, len(filter.StatusCodes))
+		for i, sc := range filter.StatusCodes {
+			placeholders[i] = "?"
+			args = append(args, sc)
+		}
+		conditions = append(conditions, "status_code IN ("+strings.Join(placeholders, ",")+")")
 	}
 	if len(conditions) > 0 {
 		query += " WHERE " + conditions[0]
@@ -168,7 +268,9 @@ func (s *SQLiteBackend) QueryRequests(ctx context.Context, filter types.RequestF
 			&r.Request, &r.Response,
 			&r.Usage.InputTokens, &r.Usage.OutputTokens,
 			&r.Usage.CacheReadTokens, &r.Usage.CacheCreationTokens,
-			&r.DurationMs, &r.StatusCode, &r.CreatedAt); err != nil {
+			&r.DurationMs, &r.StatusCode, &r.CreatedAt,
+			&r.SystemPrompt, &r.StopReason, &r.ErrorType, &r.ErrorMessage,
+			&r.TTFTMs, &r.Temperature, &r.TopP, &r.RequestParams); err != nil {
 			return nil, err
 		}
 		results = append(results, r)

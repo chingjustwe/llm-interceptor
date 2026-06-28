@@ -23,8 +23,9 @@ func writeSSE(w http.ResponseWriter, flusher http.Flusher, line string) {
 // forwarding if no blocking is needed), the parsed content blocks (for constructing
 // follow-up requests), and aggregated metadata (usage, tool calls, stop reason,
 // response body text).
-func collectSSE(upstreamResp *http.Response) (sseText string, contentBlocks []ContentBlock, respBody []byte, usage UsageData, tools []ToolCall, stopReason string, durationMs int64, err error) {
+func collectSSE(upstreamResp *http.Response) (sseText string, contentBlocks []ContentBlock, respBody []byte, usage UsageData, tools []ToolCall, stopReason string, ttftMs int64, durationMs int64, err error) {
 	start := time.Now()
+	var ttftSet bool
 
 	var buf strings.Builder
 	var finalUsage UsageData
@@ -83,6 +84,10 @@ func collectSSE(upstreamResp *http.Response) (sseText string, contentBlocks []Co
 					cb.ToolUseID, _ = block["id"].(string)
 					cb.Name, _ = block["name"].(string)
 					cb.Input, _ = block["input"].(map[string]any)
+					if !ttftSet {
+						ttftMs = time.Since(start).Milliseconds()
+						ttftSet = true
+					}
 					var tc ToolCall
 					tc.ID = cb.ToolUseID
 					tc.Name = cb.Name
@@ -90,6 +95,10 @@ func collectSSE(upstreamResp *http.Response) (sseText string, contentBlocks []Co
 					finalTools = append(finalTools, tc)
 				} else {
 					cb.Type = "text"
+					if !ttftSet {
+						ttftMs = time.Since(start).Milliseconds()
+						ttftSet = true
+					}
 				}
 				finalBlocks = append(finalBlocks, cb)
 			}
@@ -102,6 +111,10 @@ func collectSSE(upstreamResp *http.Response) (sseText string, contentBlocks []Co
 		case "content_block_delta":
 			if delta, ok := raw["delta"].(map[string]any); ok {
 				if delta["type"] == "text_delta" {
+					if !ttftSet {
+						ttftMs = time.Since(start).Milliseconds()
+						ttftSet = true
+					}
 					if text, ok := delta["text"].(string); ok {
 						respText.WriteString(text)
 						// Accumulate text into the last text content block.
@@ -163,5 +176,5 @@ func collectSSE(upstreamResp *http.Response) (sseText string, contentBlocks []Co
 	}
 
 	durationMs = time.Since(start).Milliseconds()
-	return buf.String(), finalBlocks, []byte(respText.String()), finalUsage, finalTools, finalStopReason, durationMs, scanner.Err()
+	return buf.String(), finalBlocks, []byte(respText.String()), finalUsage, finalTools, finalStopReason, ttftMs, durationMs, scanner.Err()
 }

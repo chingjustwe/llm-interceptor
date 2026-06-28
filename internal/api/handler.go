@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/chingjustwe/llm-interceptor/internal/proxy"
 	"github.com/chingjustwe/llm-interceptor/internal/router"
 	"github.com/chingjustwe/llm-interceptor/internal/state"
 	"github.com/chingjustwe/llm-interceptor/internal/storage"
@@ -72,6 +73,29 @@ func (h *Handler) listRequests(w http.ResponseWriter, r *http.Request) {
 	}
 	if s := r.URL.Query().Get("session_id"); s != "" {
 		filter.SessionID = &s
+	}
+	if sr := r.URL.Query().Get("stop_reason"); sr != "" {
+		filter.StopReason = &sr
+	}
+	if et := r.URL.Query().Get("error_type"); et != "" {
+		filter.ErrorType = &et
+	}
+	if md := r.URL.Query().Get("min_duration"); md != "" {
+		if v, err := strconv.ParseInt(md, 10, 64); err == nil {
+			filter.MinDuration = &v
+		}
+	}
+	if md := r.URL.Query().Get("max_duration"); md != "" {
+		if v, err := strconv.ParseInt(md, 10, 64); err == nil {
+			filter.MaxDuration = &v
+		}
+	}
+	if sc := r.URL.Query()["status_code"]; len(sc) > 0 {
+		for _, s := range sc {
+			if v, err := strconv.Atoi(s); err == nil {
+				filter.StatusCodes = append(filter.StatusCodes, v)
+			}
+		}
 	}
 	reqs, err := h.store.QueryRequests(r.Context(), filter)
 	if err != nil {
@@ -165,9 +189,10 @@ func (h *Handler) costStats(w http.ResponseWriter, r *http.Request) {
 
 	var totalTokens int64
 	type modelStat struct {
-		Requests int     `json:"requests"`
-		Tokens   int64   `json:"tokens"`
-		CostUSD  float64 `json:"cost_usd"`
+		Requests   int     `json:"requests"`
+		Tokens     int64   `json:"tokens"`
+		CostUSD    float64 `json:"cost_usd"`
+		ErrorCount int     `json:"-"`
 	}
 	modelStats := make(map[string]*modelStat)
 	for _, req := range reqs {
@@ -182,6 +207,9 @@ func (h *Handler) costStats(w http.ResponseWriter, r *http.Request) {
 		}
 		entry.Requests++
 		entry.Tokens += tokens
+		if req.StatusCode >= 400 {
+			entry.ErrorCount++
+		}
 
 		if h.CalculateCostFn != nil {
 			entry.CostUSD += h.CalculateCostFn(req.Model, req.Usage.InputTokens, req.Usage.OutputTokens)
@@ -191,22 +219,45 @@ func (h *Handler) costStats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	errorCount := 0
+	errorCounts := make(map[string]int)
+	for _, req := range reqs {
+		if req.StatusCode >= 400 {
+			errorCount++
+			if req.ErrorType != nil {
+				errorCounts[*req.ErrorType]++
+			} else if req.Response != "" {
+				eType, _ := proxy.ExtractError([]byte(req.Response))
+				if eType != "" {
+					errorCounts[eType]++
+				}
+			}
+		}
+	}
+
 	perModel := make([]map[string]any, 0, len(modelStats))
 	for model, stats := range modelStats {
 		perModel = append(perModel, map[string]any{
-			"model":    model,
-			"requests": stats.Requests,
-			"tokens":   stats.Tokens,
-			"cost_usd": round2(stats.CostUSD),
+			"model":      model,
+			"requests":   stats.Requests,
+			"tokens":     stats.Tokens,
+			"cost_usd":   round2(stats.CostUSD),
+			"error_rate": round2(float64(stats.ErrorCount) / float64(stats.Requests)),
 		})
 	}
 
+	var errorRate float64
+	if len(reqs) > 0 {
+		errorRate = float64(errorCount) / float64(len(reqs))
+	}
 	json.NewEncoder(w).Encode(map[string]any{
 		"daily_cost":     microToDollar(dailyCostMicro),
 		"total_cost":     microToDollar(totalCostMicro),
 		"total_requests": len(reqs),
 		"total_tokens":   totalTokens,
 		"per_model":      perModel,
+		"error_rate":     round2(errorRate),
+		"error_counts":   errorCounts,
 	})
 }
 

@@ -14,6 +14,7 @@ type RequestContext struct {
 	ID        string
 	Method    string
 	Path      string
+	APIFormat string  // "anthropic" or "openai"
 	Headers   map[string]string
 	Body      []byte
 	SessionID string
@@ -55,6 +56,7 @@ type ToolCall struct {
 type ResponseContext struct {
 	Context    context.Context
 	RequestID  string
+	APIFormat  string  // "anthropic" or "openai"
 	SessionID  string
 	Model      string
 	Usage      Usage

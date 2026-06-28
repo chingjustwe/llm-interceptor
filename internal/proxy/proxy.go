@@ -72,10 +72,17 @@ func New(name, upstreamURL string) (*Proxy, error) {
 
 // HandleRequest sends a synchronous request to the upstream provider and returns
 // the full response body, status code, headers, and measured round-trip duration.
-func (p *Proxy) HandleRequest(body []byte, headers map[string]string) (*PluginResponse, error) {
+// The path parameter specifies the upstream path; if empty, "/v1/messages" is used.
+func (p *Proxy) HandleRequest(body []byte, headers map[string]string, path string) (*PluginResponse, error) {
 	start := time.Now()
 
-	req, err := http.NewRequest("POST", p.upstream+"/v1/messages", bytes.NewReader(body))
+	if path == "" {
+		path = "/v1/messages"
+	}
+	if path[0] != '/' {
+		path = "/" + path
+	}
+	req, err := http.NewRequest("POST", p.upstream+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -204,18 +211,26 @@ func (p *Proxy) Forward(w http.ResponseWriter, r *http.Request) {
 // response (after the LLM adapts) to the client instead of the original.
 // A follow-up budget of 3 prevents infinite recursion if the LLM keeps
 // returning a blocked tool in its adaptive responses.
-func (p *Proxy) HandleRequestStream(body []byte, headers map[string]string, w http.ResponseWriter, isToolBlocked func(name string) bool) ([]byte, *UsageData, []ToolCall, string, int64, error) {
-	return p.handleRequestStream(body, headers, w, isToolBlocked, 3)
+// The path parameter specifies the upstream path; if empty, "/v1/messages" is used.
+// The extra int64 return is ttftMs (time-to-first-token in milliseconds).
+func (p *Proxy) HandleRequestStream(body []byte, headers map[string]string, w http.ResponseWriter, path string, isToolBlocked func(name string) bool) ([]byte, *UsageData, []ToolCall, string, int64, int64, error) {
+	return p.handleRequestStream(body, headers, w, path, isToolBlocked, 3)
 }
 
 // handleRequestStream is the internal implementation with a follow-up budget
 // to prevent infinite recursion when the LLM repeatedly returns blocked tools.
-func (p *Proxy) handleRequestStream(body []byte, headers map[string]string, w http.ResponseWriter, isToolBlocked func(name string) bool, followUpBudget int) ([]byte, *UsageData, []ToolCall, string, int64, error) {
+func (p *Proxy) handleRequestStream(body []byte, headers map[string]string, w http.ResponseWriter, path string, isToolBlocked func(name string) bool, followUpBudget int) ([]byte, *UsageData, []ToolCall, string, int64, int64, error) {
 	start := time.Now()
 
-	req, err := http.NewRequest("POST", p.upstream+"/v1/messages", bytes.NewReader(body))
+	if path == "" {
+		path = "/v1/messages"
+	}
+	if path[0] != '/' {
+		path = "/" + path
+	}
+	req, err := http.NewRequest("POST", p.upstream+path, bytes.NewReader(body))
 	if err != nil {
-		return nil, nil, nil, "", 0, err
+		return nil, nil, nil, "", 0, 0, err
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
@@ -229,7 +244,7 @@ func (p *Proxy) handleRequestStream(body []byte, headers map[string]string, w ht
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, nil, nil, "", 0, err
+		return nil, nil, nil, "", 0, 0, err
 	}
 	defer resp.Body.Close()
 
@@ -240,17 +255,17 @@ func (p *Proxy) handleRequestStream(body []byte, headers map[string]string, w ht
 		w.WriteHeader(resp.StatusCode)
 		errBody, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return nil, nil, nil, "", 0, fmt.Errorf("read error body: %w", err)
+			return nil, nil, nil, "", 0, 0, fmt.Errorf("read error body: %w", err)
 		}
 		w.Write(errBody)
-		return errBody, nil, nil, "", time.Since(start).Milliseconds(), nil
+		return errBody, nil, nil, "", 0, time.Since(start).Milliseconds(), nil
 	}
 
 	// Collect the SSE stream into a buffer (don't forward to client yet).
-	sseText, contentBlocks, respBody, usage, tools, stopReason, duration, err := collectSSE(resp)
+	sseText, contentBlocks, respBody, usage, tools, stopReason, ttftMs, duration, err := collectSSE(resp)
 	_ = duration // total time for the upstream round-trip; follow-up resets it
 	if err != nil {
-		return nil, nil, nil, "", 0, err
+		return nil, nil, nil, "", 0, 0, err
 	}
 
 	// If any tool_use is blocked and we still have budget, synthesise a
@@ -262,7 +277,7 @@ func (p *Proxy) handleRequestStream(body []byte, headers map[string]string, w ht
 				log.Printf("tool- policy: blocked tool_use %q in response", tc.Name)
 				newBody := buildFollowUpRequest(body, contentBlocks, tools, isToolBlocked)
 				if newBody != nil {
-					return p.handleRequestStream(newBody, headers, w, isToolBlocked, followUpBudget-1)
+					return p.handleRequestStream(newBody, headers, w, path, isToolBlocked, followUpBudget-1)
 				}
 				break
 			}
@@ -283,7 +298,7 @@ func (p *Proxy) handleRequestStream(body []byte, headers map[string]string, w ht
 	w.WriteHeader(resp.StatusCode)
 	w.Write([]byte(sseText))
 
-	return respBody, &usage, tools, stopReason, time.Since(start).Milliseconds(), nil
+	return respBody, &usage, tools, stopReason, ttftMs, time.Since(start).Milliseconds(), nil
 }
 
 // buildFollowUpRequest builds a new LLM request body that appends the assistant's
@@ -347,4 +362,74 @@ func buildFollowUpRequest(origBody []byte, contentBlocks []ContentBlock, tools [
 		return nil
 	}
 	return modified
+}
+
+// ExtractRequestParams extracts request configuration parameters from the
+// request body, excluding messages, stream, and model. Returns a flat
+// JSON-serializable map suitable for the request_params column.
+func ExtractRequestParams(body []byte) map[string]any {
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil
+	}
+	delete(raw, "messages")
+	delete(raw, "stream")
+	delete(raw, "model")
+	return raw
+}
+
+// ExtractSystemPrompt extracts the system prompt from an LLM request body.
+// It first checks the Anthropic top-level "system" field, then falls back to
+// OpenAI-style messages with role "system" or "developer".
+func ExtractSystemPrompt(body []byte) *string {
+	var raw struct {
+		System   *string            `json:"system,omitempty"`
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil
+	}
+	if raw.System != nil {
+		return raw.System
+	}
+	for _, m := range raw.Messages {
+		var msg struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		}
+		if json.Unmarshal(m, &msg) == nil && (msg.Role == "system" || msg.Role == "developer") {
+			return &msg.Content
+		}
+	}
+	return nil
+}
+
+// ExtractError parses an upstream error response body to extract the error
+// type and message. Supports both OpenAI format ({"error":{"type":"...","message":"..."}})
+// and Anthropic format ({"type":"error","error":{"type":"...","message":"..."}}).
+func ExtractError(body []byte) (errorType, errorMessage string) {
+	var raw struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return "", ""
+	}
+	if raw.Error.Type != "" {
+		return raw.Error.Type, raw.Error.Message
+	}
+	// Try nested Anthropic format: {"type":"error","error":{"type":"...","message":"..."}}
+	var anthropicRaw struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &anthropicRaw); err != nil {
+		return "", ""
+	}
+	return anthropicRaw.Error.Type, anthropicRaw.Error.Message
 }
