@@ -118,6 +118,8 @@ func (p *Proxy) HandleRequest(body []byte, headers map[string]string, path strin
 
 // ExtractUsage parses an upstream JSON response body to extract token usage counts,
 // tool calls, and the stop reason. Returns zero values if parsing fails.
+// Supports both Anthropic format (stop_reason, content[], usage.input_tokens)
+// and OpenAI format (choices[].finish_reason, choices[].message.tool_calls, usage.prompt_tokens).
 func ExtractUsage(body []byte) (UsageData, []ToolCall, string) {
 	var raw map[string]any
 	if err := json.Unmarshal(body, &raw); err != nil {
@@ -137,12 +139,41 @@ func ExtractUsage(body []byte) (UsageData, []ToolCall, string) {
 		if v, ok := u["cache_creation_input_tokens"].(float64); ok {
 			usage.CacheCreationTokens = int(v)
 		}
+		// Fallback to OpenAI token names if no Anthropic tokens found.
+		if usage.InputTokens == 0 {
+			if v, ok := u["prompt_tokens"].(float64); ok {
+				usage.InputTokens = int(v)
+			}
+		}
+		if usage.OutputTokens == 0 {
+			if v, ok := u["completion_tokens"].(float64); ok {
+				usage.OutputTokens = int(v)
+			}
+		}
+		if usage.CacheReadTokens == 0 {
+			if details, ok := u["prompt_tokens_details"].(map[string]any); ok {
+				if v, ok := details["cached_tokens"].(float64); ok {
+					usage.CacheReadTokens = int(v)
+				}
+			}
+		}
 	}
 	var stopReason string
 	if sr, ok := raw["stop_reason"].(string); ok {
 		stopReason = sr
 	}
+	// Fallback to OpenAI format: choices[0].finish_reason
+	if stopReason == "" {
+		if choices, ok := raw["choices"].([]any); ok && len(choices) > 0 {
+			if first, ok := choices[0].(map[string]any); ok {
+				if fr, ok := first["finish_reason"].(string); ok {
+					stopReason = fr
+				}
+			}
+		}
+	}
 	var toolCalls []ToolCall
+	// Try Anthropic format: content[] blocks with type "tool_use"
 	if content, ok := raw["content"].([]any); ok {
 		for _, c := range content {
 			if block, ok := c.(map[string]any); ok && block["type"] == "tool_use" {
@@ -157,6 +188,37 @@ func ExtractUsage(body []byte) (UsageData, []ToolCall, string) {
 					tc.Input = input
 				}
 				toolCalls = append(toolCalls, tc)
+			}
+		}
+	}
+	// Fallback to OpenAI format: choices[0].message.tool_calls
+	if len(toolCalls) == 0 {
+		if choices, ok := raw["choices"].([]any); ok && len(choices) > 0 {
+			if first, ok := choices[0].(map[string]any); ok {
+				if msg, ok := first["message"].(map[string]any); ok {
+					if tcs, ok := msg["tool_calls"].([]any); ok {
+						for _, tcAny := range tcs {
+							if tcMap, ok := tcAny.(map[string]any); ok {
+								var tc ToolCall
+								if id, ok := tcMap["id"].(string); ok {
+									tc.ID = id
+								}
+								if fn, ok := tcMap["function"].(map[string]any); ok {
+									if name, ok := fn["name"].(string); ok {
+										tc.Name = name
+									}
+									if args, ok := fn["arguments"].(string); ok {
+										var input map[string]any
+										if json.Unmarshal([]byte(args), &input) == nil {
+											tc.Input = input
+										}
+									}
+								}
+								toolCalls = append(toolCalls, tc)
+							}
+						}
+					}
+				}
 			}
 		}
 	}

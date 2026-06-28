@@ -164,6 +164,36 @@ func collectSSE(upstreamResp *http.Response) (sseText string, contentBlocks []Co
 			writeLine(line)
 
 		default:
+			// OpenAI streaming format: no event type, data contains choices[].delta.
+			if choices, ok := raw["choices"].([]any); ok && len(choices) > 0 {
+				if first, ok := choices[0].(map[string]any); ok {
+					if delta, ok := first["delta"].(map[string]any); ok {
+						if content, ok := delta["content"].(string); ok {
+							if !ttftSet {
+								ttftMs = time.Since(start).Milliseconds()
+								ttftSet = true
+							}
+							respText.WriteString(content)
+						}
+					}
+					if fr, ok := first["finish_reason"].(string); ok && fr != "" && fr != "null" {
+						finalStopReason = fr
+					}
+				}
+			}
+			if u, ok := raw["usage"].(map[string]any); ok {
+				if v, ok := u["prompt_tokens"].(float64); ok {
+					finalUsage.InputTokens = int(v)
+				}
+				if v, ok := u["completion_tokens"].(float64); ok {
+					finalUsage.OutputTokens = int(v)
+				}
+				if details, ok := u["prompt_tokens_details"].(map[string]any); ok {
+					if v, ok := details["cached_tokens"].(float64); ok {
+						finalUsage.CacheReadTokens = int(v)
+					}
+				}
+			}
 			if pendingEvent != "" {
 				writeLine(pendingEvent)
 				pendingEvent = ""

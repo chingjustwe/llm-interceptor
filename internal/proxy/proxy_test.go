@@ -253,6 +253,73 @@ func TestProxy_Forward_PreservesBody(t *testing.T) {
 	}
 }
 
+func TestStreamAndCollect_OpenAIFormat(t *testing.T) {
+	// Verify that OpenAI streaming format (without Anthropic event types) is
+	// correctly parsed for stop_reason, text content, and usage.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+
+		// OpenAI streaming chunks: no event: lines, just data: lines.
+		data := `data: {"id":"1","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"id":"2","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
+
+data: {"id":"3","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":null}]}
+
+data: {"id":"4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2}}
+
+data: [DONE]
+
+`
+		fmt.Fprint(w, data)
+		flusher.Flush()
+	}))
+	defer upstream.Close()
+
+	target, err := New("test-openai-stream", upstream.URL)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	respBody, usage, tools, stopReason, _, _, err := target.HandleRequestStream(
+		[]byte(`{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`),
+		map[string]string{"x-api-key": "test-key"},
+		rec,
+		"",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("HandleRequestStream failed: %v", err)
+	}
+	if string(respBody) != "Hello world" {
+		t.Fatalf("expected respBody 'Hello world', got %q", string(respBody))
+	}
+	if stopReason != "stop" {
+		t.Fatalf("expected stop_reason 'stop', got %q", stopReason)
+	}
+	if usage == nil {
+		t.Fatal("expected non-nil usage")
+	}
+	if usage.InputTokens != 5 {
+		t.Errorf("expected input_tokens=5, got %d", usage.InputTokens)
+	}
+	if usage.OutputTokens != 2 {
+		t.Errorf("expected output_tokens=2, got %d", usage.OutputTokens)
+	}
+	if len(tools) != 0 {
+		t.Errorf("expected 0 tools, got %d", len(tools))
+	}
+	// Verify SSE lines are forwarded unchanged.
+	if !strings.Contains(rec.Body.String(), `"content":"Hello"`) {
+		t.Error("forwarded SSE should contain content")
+	}
+}
+
 func TestHandleRequestStream_ToolBlockedFollowUp(t *testing.T) {
 	var requestCount int
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -463,6 +530,108 @@ func TestExtractSystemPrompt(t *testing.T) {
 	sp = ExtractSystemPrompt(body)
 	if sp != nil {
 		t.Fatalf("expected nil, got %v", *sp)
+	}
+}
+
+func TestExtractUsage_Anthropic(t *testing.T) {
+	body := []byte(`{
+		"id":"msg_123",
+		"type":"message",
+		"stop_reason":"end_turn",
+		"content":[{"type":"text","text":"Hello"}],
+		"usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":5,"cache_creation_input_tokens":3}
+	}`)
+	usage, tools, stopReason := ExtractUsage(body)
+	if stopReason != "end_turn" {
+		t.Fatalf("expected stop_reason=end_turn, got %q", stopReason)
+	}
+	if usage.InputTokens != 10 {
+		t.Errorf("expected input_tokens=10, got %d", usage.InputTokens)
+	}
+	if usage.OutputTokens != 20 {
+		t.Errorf("expected output_tokens=20, got %d", usage.OutputTokens)
+	}
+	if usage.CacheReadTokens != 5 {
+		t.Errorf("expected cache_read=5, got %d", usage.CacheReadTokens)
+	}
+	if usage.CacheCreationTokens != 3 {
+		t.Errorf("expected cache_creation=3, got %d", usage.CacheCreationTokens)
+	}
+	if len(tools) != 0 {
+		t.Errorf("expected 0 tools, got %d", len(tools))
+	}
+}
+
+func TestExtractUsage_OpenAI(t *testing.T) {
+	body := []byte(`{
+		"id":"chatcmpl-123",
+		"model":"gpt-4",
+		"choices":[{
+			"index":0,
+			"finish_reason":"stop",
+			"message":{"role":"assistant","content":"Hello"}
+		}],
+		"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}
+	}`)
+	usage, tools, stopReason := ExtractUsage(body)
+	if stopReason != "stop" {
+		t.Fatalf("expected stop_reason=stop, got %q", stopReason)
+	}
+	if usage.InputTokens != 10 {
+		t.Errorf("expected input_tokens=10, got %d", usage.InputTokens)
+	}
+	if usage.OutputTokens != 20 {
+		t.Errorf("expected output_tokens=20, got %d", usage.OutputTokens)
+	}
+	if len(tools) != 0 {
+		t.Errorf("expected 0 tools, got %d", len(tools))
+	}
+}
+
+func TestExtractUsage_OpenAI_WithToolCalls(t *testing.T) {
+	body := []byte(`{
+		"id":"chatcmpl-456",
+		"choices":[{
+			"index":0,
+			"finish_reason":"tool_calls",
+			"message":{"role":"assistant","content":null,"tool_calls":[
+				{"id":"call_abc","type":"function","function":{"name":"get_weather","arguments":"{\"loc\":\"NYC\"}"}}
+			]}
+		}],
+		"usage":{"prompt_tokens":5,"completion_tokens":10}
+	}`)
+	usage, tools, stopReason := ExtractUsage(body)
+	if stopReason != "tool_calls" {
+		t.Fatalf("expected stop_reason=tool_calls, got %q", stopReason)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+	if tools[0].ID != "call_abc" {
+		t.Errorf("expected id=call_abc, got %s", tools[0].ID)
+	}
+	if tools[0].Name != "get_weather" {
+		t.Errorf("expected name=get_weather, got %s", tools[0].Name)
+	}
+	if tools[0].Input == nil || tools[0].Input["loc"] != "NYC" {
+		t.Errorf("expected input.loc=NYC, got %v", tools[0].Input)
+	}
+	if usage.InputTokens != 5 {
+		t.Errorf("expected input_tokens=5, got %d", usage.InputTokens)
+	}
+}
+
+func TestExtractUsage_InvalidJSON(t *testing.T) {
+	_, _, stopReason := ExtractUsage([]byte(`not json`))
+	if stopReason != "" {
+		t.Errorf("expected empty stop_reason for invalid JSON, got %q", stopReason)
+	}
+}
+
+func TestExtractUsage_EmptyBody(t *testing.T) {
+	_, _, stopReason := ExtractUsage([]byte(`{}`))
+	if stopReason != "" {
+		t.Errorf("expected empty stop_reason for empty body, got %q", stopReason)
 	}
 }
 
