@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"time"
@@ -336,7 +336,7 @@ func (p *Proxy) handleRequestStream(body []byte, headers map[string]string, w ht
 	if isToolBlocked != nil && followUpBudget > 0 {
 		for _, tc := range tools {
 			if isToolBlocked(tc.Name) {
-				log.Printf("tool- policy: blocked tool_use %q in response", tc.Name)
+				slog.Info("tool-policy: blocked tool_use in response", "tool", tc.Name)
 				newBody := buildFollowUpRequest(body, contentBlocks, tools, isToolBlocked)
 				if newBody != nil {
 					return p.handleRequestStream(newBody, headers, w, path, isToolBlocked, followUpBudget-1)
@@ -350,7 +350,7 @@ func (p *Proxy) handleRequestStream(body []byte, headers map[string]string, w ht
 	if isToolBlocked != nil && followUpBudget == 0 {
 		for _, tc := range tools {
 			if isToolBlocked(tc.Name) {
-				log.Printf("tool-policy: follow-up budget exhausted, allowing blocked tool_use %q", tc.Name)
+				slog.Warn("tool-policy: follow-up budget exhausted, allowing blocked tool_use", "tool", tc.Name)
 			}
 		}
 	}

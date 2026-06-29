@@ -20,7 +20,8 @@ import (
 // It uses a connection pool via pgxpool for concurrent access and production
 // deployments.
 type PostgresBackend struct {
-	pool *pgxpool.Pool
+	pool       *pgxpool.Pool
+	compressor CompressionConfig
 }
 
 // compile-time check that PostgresBackend satisfies Backend.
@@ -29,7 +30,7 @@ var _ Backend = (*PostgresBackend)(nil)
 // NewPostgres opens a PostgreSQL connection pool using the given connection
 // string, verifies connectivity with a ping, and initializes the requests table
 // and indexes if they do not exist.
-func NewPostgres(connString string) (*PostgresBackend, error) {
+func NewPostgres(connString string, compressor CompressionConfig) (*PostgresBackend, error) {
 	pool, err := pgxpool.New(context.Background(), connString)
 	if err != nil {
 		return nil, fmt.Errorf("create pool: %w", err)
@@ -112,7 +113,10 @@ func NewPostgres(connString string) (*PostgresBackend, error) {
 		pool.Close()
 		return nil, fmt.Errorf("create error_type index: %w", err)
 	}
-	return &PostgresBackend{pool: pool}, nil
+	if !compressor.Enabled {
+		compressor = CompressionConfig{Enabled: false}
+	}
+	return &PostgresBackend{pool: pool, compressor: compressor}, nil
 }
 
 // SaveRequest inserts a new LLM request record into the database, including
@@ -152,7 +156,18 @@ func (p *PostgresBackend) SaveRequest(ctx context.Context, req *types.StoredRequ
 	if req.RequestParams != nil {
 		requestParams = *req.RequestParams
 	}
-	_, err := p.pool.Exec(ctx,
+
+	// Compress request and response bodies before storage.
+	reqBody, err := CompressBody([]byte(req.Request), p.compressor)
+	if err != nil {
+		return fmt.Errorf("compress request body: %w", err)
+	}
+	respBody, err := CompressBody([]byte(req.Response), p.compressor)
+	if err != nil {
+		return fmt.Errorf("compress response body: %w", err)
+	}
+
+	_, err = p.pool.Exec(ctx,
 		`INSERT INTO requests (id, session_id, model, method, path, request_body, response_body,
 		 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
 		 duration_ms, status_code, created_at,
@@ -160,7 +175,7 @@ func (p *PostgresBackend) SaveRequest(ctx context.Context, req *types.StoredRequ
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
 		 $15, $16, $17, $18, $19, $20, $21, $22)`,
 		req.ID, req.SessionID, req.Model, req.Method, req.Path,
-		req.Request, req.Response,
+		string(reqBody), string(respBody),
 		req.Usage.InputTokens, req.Usage.OutputTokens,
 		req.Usage.CacheReadTokens, req.Usage.CacheCreationTokens,
 		req.DurationMs, req.StatusCode,
@@ -201,6 +216,13 @@ func (p *PostgresBackend) GetSessionRequests(ctx context.Context, sessionID stri
 			&r.SystemPrompt, &r.StopReason, &r.ErrorType, &r.ErrorMessage,
 			&r.TTFTMs, &r.Temperature, &r.TopP, &r.RequestParams); err != nil {
 			return nil, fmt.Errorf("scan session request: %w", err)
+		}
+		// Decompress bodies if compressed.
+		if reqBody, err := DecompressBody([]byte(r.Request)); err == nil {
+			r.Request = string(reqBody)
+		}
+		if respBody, err := DecompressBody([]byte(r.Response)); err == nil {
+			r.Response = string(respBody)
 		}
 		results = append(results, r)
 	}
@@ -279,12 +301,25 @@ func (p *PostgresBackend) QueryRequests(ctx context.Context, filter types.Reques
 		}
 	}
 	query += " ORDER BY created_at DESC"
+
+	// Cursor-based pagination: insert cursor condition before ORDER BY.
+	if filter.Cursor != nil {
+		cursorClause := ""
+		if len(conditions) > 0 {
+			cursorClause = fmt.Sprintf(" AND created_at < $%d", argIdx)
+		} else {
+			cursorClause = fmt.Sprintf(" WHERE created_at < $%d", argIdx)
+		}
+		query = query[:len(query)-len(" ORDER BY created_at DESC")] + cursorClause + " ORDER BY created_at DESC"
+		args = append(args, filter.Cursor)
+		argIdx++
+	}
 	if filter.Limit > 0 {
 		query += fmt.Sprintf(" LIMIT $%d", argIdx)
 		args = append(args, filter.Limit)
 		argIdx++
 	}
-	if filter.Offset > 0 {
+	if filter.Offset > 0 && filter.Cursor == nil {
 		query += fmt.Sprintf(" OFFSET $%d", argIdx)
 		args = append(args, filter.Offset)
 		argIdx++
@@ -306,6 +341,13 @@ func (p *PostgresBackend) QueryRequests(ctx context.Context, filter types.Reques
 			&r.SystemPrompt, &r.StopReason, &r.ErrorType, &r.ErrorMessage,
 			&r.TTFTMs, &r.Temperature, &r.TopP, &r.RequestParams); err != nil {
 			return nil, fmt.Errorf("scan query result: %w", err)
+		}
+		// Decompress bodies if compressed.
+		if reqBody, err := DecompressBody([]byte(r.Request)); err == nil {
+			r.Request = string(reqBody)
+		}
+		if respBody, err := DecompressBody([]byte(r.Response)); err == nil {
+			r.Response = string(respBody)
 		}
 		results = append(results, r)
 	}

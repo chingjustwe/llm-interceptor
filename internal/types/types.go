@@ -90,9 +90,11 @@ type RequestFilter struct {
 	Limit     int
 	Offset    int
 
-	StopReason  *string
-	ErrorType   *string
-	MinDuration *int64
-	MaxDuration *int64
-	StatusCodes []int
+	StopReason      *string
+	ErrorType       *string
+	MinDuration     *int64
+	MaxDuration     *int64
+	StatusCodes     []int
+	Cursor          *int64  `json:"cursor,omitempty"`           // created_at cursor for cursor-based pagination (opt-in)
+	CursorDirection string  `json:"cursor_direction,omitempty"` // "next" (default) or "prev"
 }

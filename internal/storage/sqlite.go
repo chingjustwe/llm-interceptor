@@ -18,12 +18,13 @@ import (
 // database. It is the default storage engine for development and single-node
 // deployments.
 type SQLiteBackend struct {
-	db *sql.DB
+	db         *sql.DB
+	compressor CompressionConfig
 }
 
 // NewSQLite opens (or creates) a SQLite database at the given path and
 // initializes the requests table and indexes if they do not exist.
-func NewSQLite(path string) (*SQLiteBackend, error) {
+func NewSQLite(path string, compressor CompressionConfig) (*SQLiteBackend, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
@@ -113,7 +114,10 @@ func NewSQLite(path string) (*SQLiteBackend, error) {
 			return nil, fmt.Errorf("set user_version: %w", err)
 		}
 	}
-	return &SQLiteBackend{db: db}, nil
+	if !compressor.Enabled {
+		compressor = CompressionConfig{Enabled: false}
+	}
+	return &SQLiteBackend{db: db, compressor: compressor}, nil
 }
 
 // SaveRequest inserts a new LLM request record into the database, including
@@ -153,14 +157,25 @@ func (s *SQLiteBackend) SaveRequest(ctx context.Context, req *types.StoredReques
 	if req.RequestParams != nil {
 		requestParams = *req.RequestParams
 	}
-	_, err := s.db.ExecContext(ctx,
+
+	// Compress request and response bodies before storage.
+	reqBody, err := CompressBody([]byte(req.Request), s.compressor)
+	if err != nil {
+		return fmt.Errorf("compress request body: %w", err)
+	}
+	respBody, err := CompressBody([]byte(req.Response), s.compressor)
+	if err != nil {
+		return fmt.Errorf("compress response body: %w", err)
+	}
+
+	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO requests (id, session_id, model, method, path, request_body, response_body,
 		 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
 		 duration_ms, status_code, created_at,
 		 system_prompt, stop_reason, error_type, error_message, ttft_ms, temperature, top_p, request_params)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		req.ID, req.SessionID, req.Model, req.Method, req.Path,
-		req.Request, req.Response,
+		string(reqBody), string(respBody),
 		req.Usage.InputTokens, req.Usage.OutputTokens,
 		req.Usage.CacheReadTokens, req.Usage.CacheCreationTokens,
 		req.DurationMs, req.StatusCode, req.CreatedAt,
@@ -266,11 +281,24 @@ func (s *SQLiteBackend) QueryRequests(ctx context.Context, filter types.RequestF
 		}
 	}
 	query += " ORDER BY created_at DESC"
+
+	// Cursor-based pagination: insert cursor condition before ORDER BY.
+	// Cursor is the created_at timestamp of the last item from the previous page.
+	if filter.Cursor != nil {
+		cursorClause := ""
+		if len(conditions) > 0 {
+			cursorClause = " AND created_at < ?"
+		} else {
+			cursorClause = " WHERE created_at < ?"
+		}
+		query = query[:len(query)-len(" ORDER BY created_at DESC")] + cursorClause + " ORDER BY created_at DESC"
+		args = append(args, *filter.Cursor)
+	}
 	if filter.Limit > 0 {
 		query += " LIMIT ?"
 		args = append(args, filter.Limit)
 	}
-	if filter.Offset > 0 {
+	if filter.Offset > 0 && filter.Cursor == nil {
 		query += " OFFSET ?"
 		args = append(args, filter.Offset)
 	}
@@ -291,6 +319,13 @@ func (s *SQLiteBackend) QueryRequests(ctx context.Context, filter types.RequestF
 			&r.SystemPrompt, &r.StopReason, &r.ErrorType, &r.ErrorMessage,
 			&r.TTFTMs, &r.Temperature, &r.TopP, &r.RequestParams); err != nil {
 			return nil, err
+		}
+		// Decompress bodies if compressed.
+		if reqBody, err := DecompressBody([]byte(r.Request)); err == nil {
+			r.Request = string(reqBody)
+		}
+		if respBody, err := DecompressBody([]byte(r.Response)); err == nil {
+			r.Response = string(respBody)
 		}
 		results = append(results, r)
 	}

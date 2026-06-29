@@ -1,0 +1,604 @@
+openapi: "3.0.3"
+info:
+  title: LLM Interceptor API
+  description: Local-first, open-source LLM gateway. Transparent proxy, observability (OTel), governance (budget/rate-limit/tool-policy), LLM routing, and web UI.
+  version: "0.3.0"
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      operationId: health
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /v1/messages:
+    post:
+      summary: Proxy Anthropic Messages API
+      operationId: proxyAnthropic
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Successful response
+        "400":
+          $ref: "#/components/responses/ErrorResponse"
+        "402":
+          $ref: "#/components/responses/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/ErrorResponse"
+
+  /v1/chat/completions:
+    post:
+      summary: Proxy OpenAI Chat Completions API
+      operationId: proxyOpenAI
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Successful response
+        "400":
+          $ref: "#/components/responses/ErrorResponse"
+        "402":
+          $ref: "#/components/responses/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/ErrorResponse"
+
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      operationId: getMetrics
+      responses:
+        "200":
+          description: Prometheus metrics in text format
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/requests:
+    get:
+      summary: List stored requests
+      operationId: listRequests
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: cursor
+          in: query
+          schema:
+            type: integer
+            description: Cursor-based pagination (created_at timestamp)
+        - name: model
+          in: query
+          schema:
+            type: string
+        - name: session_id
+          in: query
+          schema:
+            type: string
+        - name: stop_reason
+          in: query
+          schema:
+            type: string
+        - name: error_type
+          in: query
+          schema:
+            type: string
+        - name: min_duration
+          in: query
+          schema:
+            type: integer
+        - name: max_duration
+          in: query
+          schema:
+            type: integer
+        - name: status_code
+          in: query
+          schema:
+            type: array
+            items:
+              type: integer
+      responses:
+        "200":
+          description: Array of stored requests
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StoredRequest"
+
+  /api/requests/export:
+    get:
+      summary: Export requests as CSV or JSON
+      operationId: exportRequests
+      parameters:
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [csv, json]
+        - name: model
+          in: query
+          schema:
+            type: string
+        - name: session_id
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: File download
+
+  /api/requests/{id}:
+    get:
+      summary: Get a single stored request
+      operationId: getRequest
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Single stored request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoredRequest"
+        "404":
+          description: Request not found
+
+  /api/sessions:
+    get:
+      summary: List session summaries
+      operationId: listSessions
+      responses:
+        "200":
+          description: Array of session summaries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SessionSummary"
+
+  /api/sessions/{id}/requests:
+    get:
+      summary: List requests in a session
+      operationId: getSessionRequests
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Array of stored requests
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StoredRequest"
+
+  /api/stats:
+    get:
+      summary: Aggregate statistics
+      operationId: getStats
+      responses:
+        "200":
+          description: Aggregate statistics
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/stats/timeseries:
+    get:
+      summary: Timeseries data
+      operationId: timeseriesStats
+      parameters:
+        - name: from
+          in: query
+          schema:
+            type: integer
+            description: Start timestamp in ms
+        - name: to
+          in: query
+          schema:
+            type: integer
+            description: End timestamp in ms
+        - name: granularity
+          in: query
+          schema:
+            type: string
+            enum: [minute, hour, day]
+      responses:
+        "200":
+          description: Timeseries data points
+
+  /api/events:
+    get:
+      summary: SSE event stream
+      operationId: eventStream
+      responses:
+        "200":
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /api/keys:
+    post:
+      summary: Generate a new API key
+      operationId: generateKey
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+              required: [name]
+      responses:
+        "201":
+          description: Key generated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key:
+                    type: string
+                  key_prefix:
+                    type: string
+                  name:
+                    type: string
+        "503":
+          description: Router mode not enabled
+    get:
+      summary: List API keys
+      operationId: listKeys
+      responses:
+        "200":
+          description: Array of API keys
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/APIKey"
+
+  /api/keys/{id}/disable:
+    patch:
+      summary: Disable an API key
+      operationId: disableKey
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Key disabled
+
+  /api/admin/login:
+    post:
+      summary: Admin login
+      operationId: adminLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+              required: [username, password]
+      responses:
+        "200":
+          description: JWT token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                  expires_at:
+                    type: string
+
+  /api/admin/config:
+    get:
+      summary: List runtime configuration entries
+      operationId: listConfig
+      responses:
+        "200":
+          description: Array of config entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ConfigEntry"
+
+  /api/admin/config/{key}:
+    get:
+      summary: Get a single config entry
+      operationId: getConfig
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Config entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigEntry"
+    put:
+      summary: Upsert a config entry
+      operationId: putConfig
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                value:
+                  type: object
+              required: [value]
+      responses:
+        "200":
+          description: Updated config entry
+    delete:
+      summary: Delete a config entry
+      operationId: deleteConfig
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Config entry deleted
+
+  /api/admin/audit:
+    get:
+      summary: List audit log entries
+      operationId: listAudit
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Array of audit entries
+
+  /api/agents/info:
+    get:
+      summary: Agent platform integration info
+      operationId: agentInfo
+      responses:
+        "200":
+          description: Platform info
+          content:
+            application/json:
+              schema:
+                type: object
+
+components:
+  schemas:
+    StoredRequest:
+      type: object
+      properties:
+        id:
+          type: string
+        session_id:
+          type: string
+        model:
+          type: string
+        method:
+          type: string
+        path:
+          type: string
+        request:
+          type: string
+        response:
+          type: string
+        usage:
+          $ref: "#/components/schemas/TokenUsage"
+        duration_ms:
+          type: integer
+        status_code:
+          type: integer
+        created_at:
+          type: integer
+        system_prompt:
+          type: string
+          nullable: true
+        stop_reason:
+          type: string
+          nullable: true
+        error_type:
+          type: string
+          nullable: true
+        error_message:
+          type: string
+          nullable: true
+        ttft_ms:
+          type: integer
+          nullable: true
+        temperature:
+          type: number
+          nullable: true
+        top_p:
+          type: number
+          nullable: true
+        request_params:
+          type: string
+          nullable: true
+
+    TokenUsage:
+      type: object
+      properties:
+        input_tokens:
+          type: integer
+        output_tokens:
+          type: integer
+        cache_read_tokens:
+          type: integer
+        cache_creation_tokens:
+          type: integer
+
+    SessionSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        count:
+          type: integer
+        total_tokens:
+          type: integer
+        total_cost:
+          type: number
+        avg_duration:
+          type: number
+        model_count:
+          type: integer
+        models:
+          type: array
+          items:
+            type: string
+        error_count:
+          type: integer
+
+    APIKey:
+      type: object
+      properties:
+        id:
+          type: string
+        key_prefix:
+          type: string
+        name:
+          type: string
+        enabled:
+          type: boolean
+        created_at:
+          type: integer
+
+    ConfigEntry:
+      type: object
+      properties:
+        key:
+          type: string
+        value:
+          type: object
+        updated_at:
+          type: integer
+        updated_by:
+          type: string
+
+    AuditEntry:
+      type: object
+      properties:
+        id:
+          type: integer
+        action:
+          type: string
+        target_key:
+          type: string
+        old_value:
+          type: string
+          nullable: true
+        new_value:
+          type: string
+          nullable: true
+        performed_by:
+          type: string
+        created_at:
+          type: integer
+
+  responses:
+    ErrorResponse:
+      description: Error response
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              type:
+                type: string
+              error:
+                type: object
+                properties:
+                  type:
+                    type: string
+                  message:
+                    type: string

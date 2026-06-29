@@ -10,19 +10,26 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"log/slog"
+
+	_ "embed"
+
+	// "github.com/chingjustwe/llm-interceptor/internal/alerting"
 	"github.com/chingjustwe/llm-interceptor/internal/api"
 	"github.com/chingjustwe/llm-interceptor/internal/auth"
 	"github.com/chingjustwe/llm-interceptor/internal/config"
+	"github.com/chingjustwe/llm-interceptor/internal/log"
+	"github.com/chingjustwe/llm-interceptor/internal/metrics"
 	"github.com/chingjustwe/llm-interceptor/internal/plugin"
 	"github.com/chingjustwe/llm-interceptor/internal/plugins"
 	"github.com/chingjustwe/llm-interceptor/internal/proxy"
@@ -85,10 +92,14 @@ func writeAnthropicError(w http.ResponseWriter, message string, statusCode int, 
 //go:embed ui/dist/*
 var uiFS embed.FS
 
+//go:embed openapi.yaml
+var openAPISpec []byte
+
 func staticFileServer() http.Handler {
 	sub, err := fs.Sub(uiFS, "ui/dist")
 	if err != nil {
-		log.Fatalf("failed to get ui sub fs: %v", err)
+		slog.Error("failed to get ui sub fs", "error", err)
+		os.Exit(1)
 	}
 	return http.FileServer(http.FS(sub))
 }
@@ -100,19 +111,25 @@ func main() {
 	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		log.Fatalf("failed to load config: %v", err)
+		slog.Error("failed to load config", "error", err)
+		os.Exit(1)
 	}
+
+	// Configure structured logging.
+	log.Setup(cfg.Log)
+	slog.Info("config loaded", "path", cfgPath)
 
 	// Initialize admin credentials
 	authSecret := cfg.Admin.JWTSecret
 	if authSecret == "" {
 		authSecret = auth.GenerateRandomString(32)
-		log.Println("auth: generated random JWT secret (set admin.jwt_secret in config to control)")
+		slog.Info("auth: generated random JWT secret (set admin.jwt_secret in config to control)")
 	}
 
 	home, err := os.UserHomeDir()
 	if err != nil {
-		log.Fatalf("failed to get home directory: %v", err)
+		slog.Error("failed to get home directory", "error", err)
+		os.Exit(1)
 	}
 	credsFile := filepath.Join(home, ".llm-interceptor", "admin.credentials")
 
@@ -121,48 +138,69 @@ func main() {
 	if credUsername != "" && credPassword != "" {
 		credHash, err := auth.HashPassword(credPassword)
 		if err != nil {
-			log.Fatalf("failed to hash admin password: %v", err)
+			slog.Error("failed to hash admin password", "error", err)
+			os.Exit(1)
 		}
 		if err := auth.SaveCredentials(credsFile, credUsername, credHash); err != nil {
-			log.Fatalf("failed to save admin credentials: %v", err)
+			slog.Error("failed to save admin credentials", "error", err)
+			os.Exit(1)
 		}
-		log.Printf("auth: using config-provided admin credentials (user=%s)", credUsername)
+		slog.Info("auth: using config-provided admin credentials", "user", credUsername)
 	} else if _, err := os.Stat(credsFile); err == nil {
-		log.Printf("auth: loaded admin credentials from %s", credsFile)
+		slog.Info("auth: loaded admin credentials", "file", credsFile)
 	} else {
 		genUser, genPass := auth.GenerateDefaultCredentials()
 		credHash, err := auth.HashPassword(genPass)
 		if err != nil {
-			log.Fatalf("failed to hash generated password: %v", err)
+			slog.Error("failed to hash generated password", "error", err)
+			os.Exit(1)
 		}
 		if err := auth.SaveCredentials(credsFile, genUser, credHash); err != nil {
-			log.Fatalf("failed to save generated credentials: %v", err)
+			slog.Error("failed to save generated credentials", "error", err)
+			os.Exit(1)
 		}
 		auth.PrintCredentialsToStdout(genUser, genPass)
+	}
+
+	// Convert compression config to storage format.
+	compressor := storage.CompressionConfig{
+		Enabled:   cfg.Storage.Compression.Enabled,
+		Algorithm: cfg.Storage.Compression.Algorithm,
+		MinSize:   cfg.Storage.Compression.MinSize,
+	}
+	if compressor.MinSize <= 0 {
+		compressor.MinSize = 1024
+	}
+	if compressor.Algorithm == "" {
+		compressor.Algorithm = "gzip"
 	}
 
 	// Initialize storage
 	var store storage.Backend
 	switch cfg.Storage.Type {
 	case "sqlite":
-		s, err := storage.NewSQLite(cfg.StoragePath())
+		s, err := storage.NewSQLite(cfg.StoragePath(), compressor)
 		if err != nil {
-			log.Fatalf("failed to init storage: %v", err)
+			slog.Error("failed to init storage", "error", err)
+			os.Exit(1)
 		}
 		store = s
 		defer store.Close()
 	case "postgres":
 		if cfg.Storage.Postgres == nil {
-			log.Fatalf("postgres storage requires a 'postgres' config block")
+			slog.Error("postgres storage requires a 'postgres' config block")
+			os.Exit(1)
 		}
-		s, err := storage.NewPostgres(cfg.Storage.Postgres.ConnectionString)
+		s, err := storage.NewPostgres(cfg.Storage.Postgres.ConnectionString, compressor)
 		if err != nil {
-			log.Fatalf("failed to init postgres storage: %v", err)
+			slog.Error("failed to init postgres storage", "error", err)
+			os.Exit(1)
 		}
 		store = s
 		defer store.Close()
 	default:
-		log.Fatalf("unknown storage type: %s", cfg.Storage.Type)
+		slog.Error("unknown storage type", "type", cfg.Storage.Type)
+		os.Exit(1)
 	}
 	// Initialize state store
 	var st state.Backend
@@ -172,16 +210,19 @@ func main() {
 		defer st.Close()
 	case "redis":
 		if cfg.StateStore.Redis == nil {
-			log.Fatalf("redis state store requires a 'redis' config block")
+			slog.Error("redis state store requires a 'redis' config block")
+			os.Exit(1)
 		}
 		s, err := state.NewRedis(cfg.StateStore.Redis.URL)
 		if err != nil {
-			log.Fatalf("failed to init redis state: %v", err)
+			slog.Error("failed to init redis state", "error", err)
+			os.Exit(1)
 		}
 		st = s
 		defer st.Close()
 	default:
-		log.Fatalf("unknown state store type: %s", cfg.StateStore.Type)
+		slog.Error("unknown state store type", "type", cfg.StateStore.Type)
+		os.Exit(1)
 	}
 
 	// Overlay runtime configuration from the database on top of YAML config.
@@ -192,9 +233,9 @@ func main() {
 			runtimeMap[e.Key] = e.Value
 		}
 		cfg.OverlayRuntimeConfig(runtimeMap)
-		log.Printf("config: overlaid %d runtime config entries from database", len(runtimeEntries))
+		slog.Info("config: overlaid runtime config entries from database", "count", len(runtimeEntries))
 	} else if err != nil {
-		log.Printf("config: failed to load runtime config: %v (continuing with YAML-only)", err)
+		slog.Warn("config: failed to load runtime config (continuing with YAML-only)", "error", err)
 	}
 
 	// routerMode bundles all router-mode state. It is nil when router mode is
@@ -218,7 +259,8 @@ func main() {
 			// Create a dedicated proxy per provider so each targets its own upstream.
 			pp, err := proxy.New(pc.Name, hp.BaseURL())
 			if err != nil {
-				log.Fatalf("failed to init proxy for provider %s: %v", pc.Name, err)
+				slog.Error("failed to init proxy for provider", "name", pc.Name, "error", err)
+				os.Exit(1)
 			}
 			providerProxies[pc.Name] = pp
 			providerKeys[pc.Name] = hp.APIKey()
@@ -230,7 +272,7 @@ func main() {
 			proxies:    providerProxies,
 			apiKeys:    providerKeys,
 		}
-		log.Printf("Router mode enabled with %d provider(s)", len(providers))
+		slog.Info("Router mode enabled", "providers", len(providers))
 	}
 
 	// Initialize plugins
@@ -244,7 +286,8 @@ func main() {
 			MaxAttrLen:   cfg.Plugins.OTelExporter.MaxAttrLen,
 		})
 		if err != nil {
-			log.Fatalf("failed to init otel exporter: %v", err)
+			slog.Error("failed to init otel exporter", "error", err)
+			os.Exit(1)
 		}
 		pluginList = append(pluginList, exporter)
 		defer exporter.Shutdown(ctx)
@@ -270,7 +313,7 @@ func main() {
 
 		// Initial fetch (best-effort, merges into static defaults).
 		if onlinePrices, err := plugins.FetchOnlinePricing(pricingURL); err != nil {
-			log.Printf("cost: initial pricing unavailable (%v), using static defaults", err)
+			slog.Warn("cost: initial pricing unavailable, using static defaults", "error", err)
 		} else {
 			ct.MergePrices(onlinePrices)
 		}
@@ -309,14 +352,42 @@ func main() {
 
 	target, err := proxy.New("anthropic", cfg.Upstream)
 	if err != nil {
-		log.Fatalf("failed to init proxy: %v", err)
+		slog.Error("failed to init proxy", "error", err)
+		os.Exit(1)
 	}
+
+	// Prometheus metrics registry.
+	metricsRegistry := metrics.NewMetrics()
 
 	// HTTP server
 	r := chi.NewRouter()
-	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RealIP)
+
+	// Prometheus metrics endpoint (no auth).
+	r.Get("/metrics", metricsRegistry.Handler().ServeHTTP)
+
+	// OpenAPI spec endpoint.
+	r.Get("/api/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-yaml")
+		w.Write(openAPISpec)
+	})
+
+	// Swagger UI at /api/docs (no auth).
+	r.Get("/api/docs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write([]byte(`<!DOCTYPE html>
+<html>
+<head><title>API Docs</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+</head>
+<body>
+<div id="swagger-ui"></div>
+<script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+<script>SwaggerUIBundle({url: "/api/openapi.yaml", dom_id: "#swagger-ui"})</script>
+</body>
+</html>`))
+	})
 
 	// SSE event broker for live updates to the web UI.
 	broker := api.NewSSEBroker()
@@ -334,6 +405,9 @@ func main() {
 	}
 	apiHandler.Register(r)
 	r.Get("/api/events", broker.ServeHTTP)
+
+	// WaitGroup to track in-flight requests for graceful shutdown.
+	var wg sync.WaitGroup
 
 	llmHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -370,17 +444,23 @@ func main() {
 			reqCtx.Headers[k] = strings.Join(v, ", ")
 		}
 
+		wg.Add(1)
+		logger := slog.With("request_id", reqCtx.ID, "session_id", reqCtx.SessionID)
+
 		hookResult, err := disp.ExecuteOnRequest(reqCtx)
 		if err != nil {
-			log.Printf("plugin error: %v [req=%s session=%s agent=%s]", err, reqCtx.ID, reqCtx.SessionID, reqCtx.AgentID)
+			logger.Error("plugin error", "error", err)
 			writeAnthropicError(w, "internal error", http.StatusInternalServerError, 0, "")
+			wg.Done()
 			return
 		}
 		if hookResult != nil && hookResult.Block {
-			log.Printf("request blocked: %s (status=%d) [req=%s session=%s agent=%s]",
-				hookResult.Reason, hookResult.StatusCode,
-				reqCtx.ID, reqCtx.SessionID, reqCtx.AgentID)
+			logger.Warn("request blocked",
+				"reason", hookResult.Reason,
+				"status_code", hookResult.StatusCode,
+			)
 			writeAnthropicError(w, hookResult.Reason, hookResult.StatusCode, hookResult.RetryAfterSec, hookResult.ErrorType)
+			wg.Done()
 			return
 		}
 
@@ -439,7 +519,8 @@ func main() {
 			respBody, usage, toolCalls, stopReason, ttftMs, duration, err := activeTarget.HandleRequestStream(body, reqCtx.Headers, w, r.URL.Path, isToolBlocked)
 			reqTTFTMs = &ttftMs
 			if err != nil {
-				log.Printf("proxy stream error: %v", err)
+				logger.Error("proxy stream error", "error", err)
+				wg.Done()
 				return
 			}
 			respCtx.Body = respBody
@@ -455,8 +536,9 @@ func main() {
 		} else {
 			pr, err := activeTarget.HandleRequest(body, reqCtx.Headers, r.URL.Path)
 			if err != nil {
-				log.Printf("proxy error: %v", err)
+				logger.Error("proxy error", "error", err)
 				http.Error(w, "upstream error", http.StatusBadGateway)
+				wg.Done()
 				return
 			}
 			respCtx.StatusCode = pr.StatusCode
@@ -480,11 +562,12 @@ func main() {
 		}
 
 		if err := disp.ExecuteOnResponse(&respCtx); err != nil {
-			log.Printf("plugin response error: %v", err)
+			logger.Error("plugin response error", "error", err)
 		}
 
-		// Save request to storage and notify SSE clients (async, best-effort)
+		// Save request to storage, record metrics, and notify SSE clients (async, best-effort)
 		go func() {
+			defer wg.Done()
 			storedReq := &types.StoredRequest{
 				ID:        reqCtx.ID,
 				SessionID: reqCtx.SessionID,
@@ -532,9 +615,16 @@ func main() {
 					storedReq.RequestParams = &pStr
 				}
 			}
-			if err := store.SaveRequest(context.Background(), storedReq); err != nil {
-				log.Printf("failed to save request: %v", err)
+			// Calculate cost if cost tracker is available.
+			var costUSD float64
+			if calculateCost != nil {
+				costUSD = calculateCost(respCtx.Model, respCtx.Usage.InputTokens, respCtx.Usage.OutputTokens)
 			}
+			if err := store.SaveRequest(context.Background(), storedReq); err != nil {
+				logger.Error("failed to save request", "error", err)
+			}
+			// Record Prometheus metrics (non-blocking).
+			metricsRegistry.RecordRequest(context.Background(), storedReq, costUSD)
 			// Publish request data to SSE clients
 			broker.Publish(storedReq)
 		}()
@@ -554,20 +644,45 @@ func main() {
 		Handler: r,
 	}
 
+	// Graceful shutdown with configurable timeout.
+	shutdownTimeout := time.Duration(cfg.ShutdownTimeoutSec) * time.Second
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		<-sigCh
-		log.Println("shutting down...")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		sig := <-sigCh
+		slog.Info("shutting down", "signal", sig.String(), "timeout", shutdownTimeout)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
-		server.Shutdown(shutdownCtx)
+
+		// Stop accepting new connections and drain existing ones.
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			slog.Error("server shutdown error", "error", err)
+		}
+
+		// Wait for in-flight requests to complete (with remaining timeout).
+		slog.Info("waiting for in-flight requests to complete")
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+			slog.Info("all in-flight requests completed")
+		case <-shutdownCtx.Done():
+			slog.Warn("shutdown timeout waiting for in-flight requests")
+		}
+
+		slog.Info("shutdown complete")
 	}()
 
-	log.Printf("LLM Interceptor listening on %s", cfg.Listen)
-	log.Printf("Upstream: %s", cfg.Upstream)
+	slog.Info("server starting",
+		"listen", cfg.Listen,
+		"upstream", cfg.Upstream,
+	)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("server error: %v", err)
+		slog.Error("server error", "error", err)
+		os.Exit(1)
 	}
 }
 

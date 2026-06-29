@@ -9,7 +9,7 @@ import (
 )
 
 func TestSQLiteBackend_ConfigCRUD(t *testing.T) {
-	s, err := NewSQLite(":memory:")
+	s, err := NewSQLite(":memory:", CompressionConfig{Enabled: false})
 	if err != nil {
 		t.Fatalf("NewSQLite failed: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestSQLiteBackend_ConfigCRUD(t *testing.T) {
 }
 
 func TestSQLiteBackend_SaveAndQueryWithNewFields(t *testing.T) {
-	s, err := NewSQLite(":memory:")
+	s, err := NewSQLite(":memory:", CompressionConfig{Enabled: false})
 	if err != nil {
 		t.Fatalf("NewSQLite failed: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestSQLiteBackend_SaveAndQueryWithNewFields(t *testing.T) {
 }
 
 func TestSQLiteBackend_AuditLog(t *testing.T) {
-	s, err := NewSQLite(":memory:")
+	s, err := NewSQLite(":memory:", CompressionConfig{Enabled: false})
 	if err != nil {
 		t.Fatalf("NewSQLite failed: %v", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -37,7 +38,7 @@ func (h *Handler) writeAudit(ctx context.Context, action, targetKey string, oldV
 	}
 	if err := h.store.SaveAuditEntry(ctx, entry); err != nil {
 		// Audit failures are non-fatal — log and continue.
-	_ = err
+	slog.Warn("audit write failed", "error", err)
 	}
 }
 
@@ -144,10 +145,26 @@ func (h *Handler) listRequests(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if cursor := r.URL.Query().Get("cursor"); cursor != "" {
+		if v, err := strconv.ParseInt(cursor, 10, 64); err == nil {
+			filter.Cursor = &v
+		}
+		filter.CursorDirection = r.URL.Query().Get("cursor_direction")
+	}
 	reqs, err := h.store.QueryRequests(r.Context(), filter)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	// Set X-Next-Cursor header if pagination boundary is reached.
+	if filter.Cursor == nil && len(reqs) == filter.Limit && filter.Limit > 0 {
+		lastID := reqs[len(reqs)-1].CreatedAt
+		w.Header().Set("X-Next-Cursor", strconv.FormatInt(lastID, 10))
+	}
+	// Cursor-based pagination also gets the next cursor header.
+	if filter.Cursor != nil && len(reqs) == filter.Limit && filter.Limit > 0 {
+		lastID := reqs[len(reqs)-1].CreatedAt
+		w.Header().Set("X-Next-Cursor", strconv.FormatInt(lastID, 10))
 	}
 	json.NewEncoder(w).Encode(reqs)
 }

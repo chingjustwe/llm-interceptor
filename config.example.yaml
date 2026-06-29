@@ -1,6 +1,7 @@
 listen: "127.0.0.1:8080"
 upstream: "https://api.anthropic.com"
 metric_prefix: "llm_proxy."
+shutdown_timeout_sec: 10
 
 admin:
   username: ""
@@ -8,6 +9,9 @@ admin:
   jwt_secret: ""
 
 log:
+  format: json
+  level: info
+  output: stdout
   request_body: false
   response_body: false
 
@@ -18,6 +22,10 @@ storage:
   #type: postgres
   #postgres:
   #  connection_string: "postgres://llmproxy:llmproxy@localhost:5432/llmproxy?sslmode=disable"
+  compression:
+    enabled: true
+    algorithm: gzip
+    min_size: 1024
 
 state_store:
   type: memory
@@ -57,3 +65,23 @@ router:
       base_url: "https://api.openai.com"
       model_glob: "gpt-*"
       api_key: "${OPENAI_API_KEY}"
+
+# Alerting is best-effort and never blocks the request path.
+# Log rotation should be handled externally (logrotate, Docker log driver, etc.).
+#alerting:
+#  slack_webhook_url: "https://hooks.slack.com/services/..."
+#  webhook_url: "http://localhost:9090/alert"
+#  email_smtp:
+#    host: "smtp.example.com"
+#    port: 587
+#    user: "user@example.com"
+#    pass: "password"
+#    from: "alerts@example.com"
+#    to: "admin@example.com"
+#  rules:
+#    - name: "high-error-rate"
+#      metric: "error_rate"
+#      threshold: 0.1
+#      duration: "5m"
+#      channels: ["slack"]
+#      severity: "critical"

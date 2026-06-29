@@ -15,15 +15,17 @@ import (
 // It specifies the listen address, upstream provider, storage, state store,
 // plugin settings, and optional router configuration for multi-provider mode.
 type Config struct {
-	Listen       string           `yaml:"listen"`
-	Upstream     string           `yaml:"upstream"`
-	MetricPrefix string           `yaml:"metric_prefix"`
-	Log          LogConfig        `yaml:"log"`
-	Storage      StorageConfig    `yaml:"storage"`
-	StateStore   StateStoreConfig `yaml:"state_store"`
-	Plugins      PluginConfig     `yaml:"plugins"`
-	Router       RouterConfig     `yaml:"router"`
-	Admin        AdminConfig      `yaml:"admin"`
+	Listen            string           `yaml:"listen"`
+	Upstream          string           `yaml:"upstream"`
+	MetricPrefix      string           `yaml:"metric_prefix"`
+	ShutdownTimeoutSec int             `yaml:"shutdown_timeout_sec"`
+	Log               LogConfig        `yaml:"log"`
+	Storage           StorageConfig    `yaml:"storage"`
+	StateStore        StateStoreConfig `yaml:"state_store"`
+	Plugins           PluginConfig     `yaml:"plugins"`
+	Router            RouterConfig     `yaml:"router"`
+	Admin             AdminConfig      `yaml:"admin"`
+	Alerting          AlertingConfig   `yaml:"alerting,omitempty"`
 }
 
 // PluginConfig holds configuration for all built-in plugins.
@@ -82,18 +84,58 @@ type OTelExporterConfig struct {
 	MaxAttrLen int               `yaml:"max_attr_len,omitempty"`
 }
 
-// LogConfig controls whether request and response bodies are logged.
+// LogConfig controls structured logging format, level, and which bodies are logged.
 type LogConfig struct {
-	RequestBody  bool `yaml:"request_body"`
-	ResponseBody bool `yaml:"response_body"`
+	Format       string `yaml:"format"`        // "json" or "text" (default)
+	Level        string `yaml:"level"`         // "debug", "info", "warn", "error" (default "info")
+	Output       string `yaml:"output"`        // "stdout" (default) or "stderr"
+	RequestBody  bool   `yaml:"request_body"`
+	ResponseBody bool   `yaml:"response_body"`
+}
+
+// AlertingConfig defines the alerting system configuration. It is best-effort
+// and never blocks the request path.
+type AlertingConfig struct {
+	SlackWebhookURL string                     `yaml:"slack_webhook_url,omitempty"`
+	EmailSMTP       *AlertingEmailSMTPConfig   `yaml:"email_smtp,omitempty"`
+	WebhookURL      string                     `yaml:"webhook_url,omitempty"`
+	Rules           []AlertingRuleConfig       `yaml:"rules,omitempty"`
+}
+
+// AlertingEmailSMTPConfig defines SMTP settings for email alerts.
+type AlertingEmailSMTPConfig struct {
+	Host string `yaml:"host"`
+	Port int    `yaml:"port"`
+	User string `yaml:"user"`
+	Pass string `yaml:"pass"`
+	From string `yaml:"from"`
+	To   string `yaml:"to"`
+}
+
+// AlertingRuleConfig defines a single alert rule with metric, threshold, and channels.
+type AlertingRuleConfig struct {
+	Name      string   `yaml:"name"`
+	Metric    string   `yaml:"metric"`
+	Threshold float64  `yaml:"threshold"`
+	Duration  string   `yaml:"duration"`
+	Channels  []string `yaml:"channels"`
+	Severity  string   `yaml:"severity"`
 }
 
 // StorageConfig selects the storage backend (sqlite or postgres) and
 // provides backend-specific connection parameters.
 type StorageConfig struct {
-	Type     string          `yaml:"type"`
-	SQLite   *SQLiteConfig   `yaml:"sqlite,omitempty"`
-	Postgres *PostgresConfig `yaml:"postgres,omitempty"`
+	Type        string          `yaml:"type"`
+	SQLite      *SQLiteConfig   `yaml:"sqlite,omitempty"`
+	Postgres    *PostgresConfig `yaml:"postgres,omitempty"`
+	Compression CompressionConfig `yaml:"compression,omitempty"`
+}
+
+// CompressionConfig controls body compression behavior for stored requests.
+type CompressionConfig struct {
+	Enabled   bool   `yaml:"enabled"`
+	Algorithm string `yaml:"algorithm"`  // "gzip" (default)
+	MinSize   int    `yaml:"min_size"`   // minimum body length to compress, default 1024
 }
 
 // SQLiteConfig specifies the filesystem path for the SQLite database file.
@@ -156,12 +198,18 @@ type AdminConfig struct {
 // state store.
 func Default() *Config {
 	return &Config{
-		Listen:       "127.0.0.1:8080",
-		Upstream:     "https://api.anthropic.com",
-		MetricPrefix: "llm_proxy.",
+		Listen:             "127.0.0.1:8080",
+		Upstream:           "https://api.anthropic.com",
+		MetricPrefix:       "llm_proxy.",
+		ShutdownTimeoutSec: 10,
 		Storage: StorageConfig{
 			Type:   "sqlite",
 			SQLite: &SQLiteConfig{Path: "~/.llm-interceptor/data.db"},
+			Compression: CompressionConfig{
+				Enabled:   true,
+				Algorithm: "gzip",
+				MinSize:   1024,
+			},
 		},
 		StateStore: StateStoreConfig{
 			Type:   "memory",
