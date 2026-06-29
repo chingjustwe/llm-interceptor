@@ -164,8 +164,12 @@ function AppContent() {
         <div className="px-4 py-4 border-b border-zinc-800">
           <div className="flex items-center gap-2.5">
             <div className="w-7 h-7 rounded bg-gradient-to-br from-cyan-500 to-emerald-500 flex items-center justify-center">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="14" y="3" width="2" height="18" rx="1" fill="white" stroke="none"/>
+                <path d="M3 12 L12 12" opacity="0.7"/>
+                <path d="M9 9 L12 12 L9 15" opacity="0.7"/>
+                <circle cx="15" cy="7" r="1.5" fill="white" stroke="none" opacity="0.8"/>
+                <circle cx="15" cy="17" r="1.5" fill="white" stroke="none" opacity="0.8"/>
               </svg>
             </div>
             <div>

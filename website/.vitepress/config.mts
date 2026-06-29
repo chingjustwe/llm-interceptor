@@ -7,6 +7,7 @@ export default defineConfig({
   description:
     'Local-first, open-source LLM gateway. Transparent proxy, OTel observability, governance, and multi-provider routing in a single Go binary.',
   head: [
+    ['link', { rel: 'icon', href: '/llm-interceptor/logo.svg', type: 'image/svg+xml' }],
     ['link', { rel: 'preconnect', href: 'https://fonts.googleapis.com' }],
     [
       'link',
