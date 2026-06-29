@@ -6,6 +6,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -57,6 +58,13 @@ func NewSQLite(path string) (*SQLiteBackend, error) {
 			created_at INTEGER NOT NULL
 		);
 		CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(key_prefix);
+
+		CREATE TABLE IF NOT EXISTS runtime_config (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL,
+			updated_at INTEGER NOT NULL,
+			updated_by TEXT NOT NULL DEFAULT ''
+		);
 	`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create table: %w", err)
@@ -345,6 +353,75 @@ func (s *SQLiteBackend) DisableAPIKey(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE api_keys SET enabled = false WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("disable api key: %w", err)
+	}
+	return nil
+}
+
+// SaveConfig upserts a runtime configuration entry. If the key already exists,
+// its value, updated_at, and updated_by are replaced.
+func (s *SQLiteBackend) SaveConfig(ctx context.Context, entry *types.ConfigEntry) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO runtime_config (key, value, updated_at, updated_by)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at, updated_by=excluded.updated_by`,
+		entry.Key, string(entry.Value), entry.UpdatedAt, entry.UpdatedBy,
+	)
+	if err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+	return nil
+}
+
+// GetConfig retrieves a single runtime configuration entry by key. Returns
+// nil without error if the key does not exist.
+func (s *SQLiteBackend) GetConfig(ctx context.Context, key string) (*types.ConfigEntry, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT key, value, updated_at, updated_by FROM runtime_config WHERE key = ?`, key,
+	)
+	var entry types.ConfigEntry
+	var valueStr string
+	err := row.Scan(&entry.Key, &valueStr, &entry.UpdatedAt, &entry.UpdatedBy)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get config: %w", err)
+	}
+	entry.Value = json.RawMessage(valueStr)
+	return &entry, nil
+}
+
+// ListConfig returns all runtime configuration entries, ordered by key.
+func (s *SQLiteBackend) ListConfig(ctx context.Context) ([]types.ConfigEntry, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT key, value, updated_at, updated_by FROM runtime_config ORDER BY key`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list config: %w", err)
+	}
+	defer rows.Close()
+	var entries []types.ConfigEntry
+	for rows.Next() {
+		var entry types.ConfigEntry
+		var valueStr string
+		if err := rows.Scan(&entry.Key, &valueStr, &entry.UpdatedAt, &entry.UpdatedBy); err != nil {
+			return nil, fmt.Errorf("scan config: %w", err)
+		}
+		entry.Value = json.RawMessage(valueStr)
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate config: %w", err)
+	}
+	return entries, nil
+}
+
+// DeleteConfig removes a runtime configuration entry by key. It is not an
+// error if the key does not exist.
+func (s *SQLiteBackend) DeleteConfig(ctx context.Context, key string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM runtime_config WHERE key = ?`, key)
+	if err != nil {
+		return fmt.Errorf("delete config: %w", err)
 	}
 	return nil
 }

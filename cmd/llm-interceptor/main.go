@@ -184,6 +184,19 @@ func main() {
 		log.Fatalf("unknown state store type: %s", cfg.StateStore.Type)
 	}
 
+	// Overlay runtime configuration from the database on top of YAML config.
+	// DB values take precedence and can override any section at startup.
+	if runtimeEntries, err := store.ListConfig(context.Background()); err == nil && len(runtimeEntries) > 0 {
+		runtimeMap := make(map[string]json.RawMessage, len(runtimeEntries))
+		for _, e := range runtimeEntries {
+			runtimeMap[e.Key] = e.Value
+		}
+		cfg.OverlayRuntimeConfig(runtimeMap)
+		log.Printf("config: overlaid %d runtime config entries from database", len(runtimeEntries))
+	} else if err != nil {
+		log.Printf("config: failed to load runtime config: %v (continuing with YAML-only)", err)
+	}
+
 	// routerMode bundles all router-mode state. It is nil when router mode is
 	// disabled, and the handler falls through to the default passthrough proxy.
 	type routerMode struct {

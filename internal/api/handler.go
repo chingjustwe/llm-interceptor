@@ -22,6 +22,13 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// ConfigChangeEvent is published via SSE when a runtime config value is updated.
+type ConfigChangeEvent struct {
+	Type      string `json:"type"`
+	Key       string `json:"key"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
 // CostCalculator computes the USD cost of an LLM request from model and tokens.
 // If nil, the handler falls back to a simple static estimate.
 type CostCalculator func(model string, inputTokens, outputTokens int) float64
@@ -36,6 +43,7 @@ type Handler struct {
 	CalculateCostFn CostCalculator
 	AuthSecret      string // HMAC-SHA256 key for signing admin JWT tokens
 	CredsFile       string // path to the admin credentials file
+	Broker          *SSEBroker // for publishing config change events (optional)
 }
 
 // NewHandler creates an API handler backed by the given storage and state backends.
@@ -721,6 +729,117 @@ func (h *Handler) agentInfo(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+// listConfig returns all runtime configuration entries.
+func (h *Handler) listConfig(w http.ResponseWriter, r *http.Request) {
+	entries, err := h.store.ListConfig(r.Context())
+	if err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		return
+	}
+	if entries == nil {
+		entries = []types.ConfigEntry{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(entries)
+}
+
+// getConfig returns a single runtime configuration entry by key.
+func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
+	key := chi.URLParam(r, "key")
+	if key == "" {
+		http.Error(w, `{"error":"key is required"}`, http.StatusBadRequest)
+		return
+	}
+	entry, err := h.store.GetConfig(r.Context(), key)
+	if err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		return
+	}
+	if entry == nil {
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(entry)
+}
+
+// putConfig upserts a runtime configuration entry. The body must contain the
+// JSON value directly, e.g. {"value": {"max_cost_per_session": 1.0}}.
+func (h *Handler) putConfig(w http.ResponseWriter, r *http.Request) {
+	key := chi.URLParam(r, "key")
+	if key == "" {
+		http.Error(w, `{"error":"key is required"}`, http.StatusBadRequest)
+		return
+	}
+	var req struct {
+		Value json.RawMessage `json:"value"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+	if len(req.Value) == 0 {
+		http.Error(w, `{"error":"value is required"}`, http.StatusBadRequest)
+		return
+	}
+	claims := auth.UserFromContext(r.Context())
+	updatedBy := ""
+	if claims != nil {
+		updatedBy = claims.Username
+	}
+	entry := &types.ConfigEntry{
+		Key:       key,
+		Value:     req.Value,
+		UpdatedAt: time.Now().UnixMilli(),
+		UpdatedBy: updatedBy,
+	}
+	if err := h.store.SaveConfig(r.Context(), entry); err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		return
+	}
+	// Publish config change event via SSE if broker is available.
+	if h.Broker != nil {
+		h.Broker.Publish(ConfigChangeEvent{
+			Type:      "config_reload",
+			Key:       key,
+			UpdatedAt: entry.UpdatedAt,
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(entry)
+}
+
+// deleteConfig removes a runtime configuration entry.
+func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
+	key := chi.URLParam(r, "key")
+	if key == "" {
+		http.Error(w, `{"error":"key is required"}`, http.StatusBadRequest)
+		return
+	}
+	claims := auth.UserFromContext(r.Context())
+	updatedBy := ""
+	if claims != nil {
+		updatedBy = claims.Username
+	}
+	// Read old value before deleting (for audit, will be used in Step 5).
+	if err := h.store.DeleteConfig(r.Context(), key); err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		return
+	}
+	// Publish config change event via SSE if broker is available.
+	if h.Broker != nil {
+		h.Broker.Publish(ConfigChangeEvent{
+			Type:      "config_delete",
+			Key:       key,
+			UpdatedAt: time.Now().UnixMilli(),
+		})
+	}
+	// Track deletion in context metadata for future audit logging.
+	_ = updatedBy
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
 // loginHandler authenticates an admin user and returns a signed JWT token.
 // POST /api/admin/login
 // Request:  {"username":"...","password":"..."}
@@ -785,6 +904,13 @@ func (h *Handler) requireAuth(next http.Handler) http.Handler {
 func (h *Handler) adminRouter() chi.Router {
 	r := chi.NewRouter()
 	r.Use(h.requireAuth)
+
+	// Runtime configuration CRUD
+	r.Get("/config", h.listConfig)
+	r.Get("/config/{key}", h.getConfig)
+	r.Put("/config/{key}", h.putConfig)
+	r.Delete("/config/{key}", h.deleteConfig)
+
 	return r
 }
 

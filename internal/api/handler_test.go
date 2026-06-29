@@ -23,10 +23,11 @@ import (
 // mockStore is an in-memory storage backend for handler tests.
 type mockStore struct {
 	requests []types.StoredRequest
+	config   map[string]*types.ConfigEntry
 }
 
 func newMockStore(reqs []types.StoredRequest) *mockStore {
-	return &mockStore{requests: reqs}
+	return &mockStore{requests: reqs, config: make(map[string]*types.ConfigEntry)}
 }
 
 func (m *mockStore) SaveRequest(_ context.Context, _ *types.StoredRequest) error { return nil }
@@ -116,6 +117,38 @@ func (m *mockStore) GetAPIKeyByPrefix(_ context.Context, _ string) (*storage.API
 }
 func (m *mockStore) ListAPIKeys(_ context.Context) ([]storage.APIKey, error) { return nil, nil }
 func (m *mockStore) DisableAPIKey(_ context.Context, _ string) error        { return nil }
+func (m *mockStore) SaveConfig(_ context.Context, entry *types.ConfigEntry) error {
+	m.config[entry.Key] = &types.ConfigEntry{
+		Key:       entry.Key,
+		Value:     append(json.RawMessage{}, entry.Value...),
+		UpdatedAt: entry.UpdatedAt,
+		UpdatedBy: entry.UpdatedBy,
+	}
+	return nil
+}
+func (m *mockStore) GetConfig(_ context.Context, key string) (*types.ConfigEntry, error) {
+	e, ok := m.config[key]
+	if !ok {
+		return nil, nil
+	}
+	return &types.ConfigEntry{
+		Key:       e.Key,
+		Value:     append(json.RawMessage{}, e.Value...),
+		UpdatedAt: e.UpdatedAt,
+		UpdatedBy: e.UpdatedBy,
+	}, nil
+}
+func (m *mockStore) ListConfig(_ context.Context) ([]types.ConfigEntry, error) {
+	var entries []types.ConfigEntry
+	for _, e := range m.config {
+		entries = append(entries, *e)
+	}
+	return entries, nil
+}
+func (m *mockStore) DeleteConfig(_ context.Context, key string) error {
+	delete(m.config, key)
+	return nil
+}
 func (m *mockStore) Close() error                                           { return nil }
 
 // mockState is a no-op state backend for handler tests.
@@ -960,6 +993,91 @@ func TestHandlerRegister_AdminRoutes(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Errorf("login should be public, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestConfigCRUD_AsAdmin(t *testing.T) {
+	dir := t.TempDir()
+	credsFile := filepath.Join(dir, "admin.credentials")
+	hash, _ := auth.HashPassword("pass")
+	auth.SaveCredentials(credsFile, "admin", hash)
+	h := NewHandler(newMockStore(nil), &mockState{})
+	h.AuthSecret = "test-secret-key-min-32-chars!!!!!!!!"
+	h.CredsFile = credsFile
+
+	// Generate a valid token
+	token, _, _ := auth.GenerateToken("admin", "admin", h.AuthSecret, time.Hour)
+
+	// Create a chi router with admin routes
+	r := chi.NewRouter()
+	r.Post("/api/admin/login", h.loginHandler)
+	r.Mount("/api/admin", h.adminRouter())
+
+	// Put a config value
+	putBody := `{"value": {"max_cost_per_session": 1.5}}`
+	req := httptest.NewRequest("PUT", "/api/admin/config/budget", strings.NewReader(putBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT config expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Get the config value back
+	req = httptest.NewRequest("GET", "/api/admin/config/budget", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET config expected 200, got %d", w.Code)
+	}
+	var entry types.ConfigEntry
+	if err := json.NewDecoder(w.Body).Decode(&entry); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if entry.Key != "budget" {
+		t.Errorf("expected key budget, got %s", entry.Key)
+	}
+
+	// List config
+	req = httptest.NewRequest("GET", "/api/admin/config", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("LIST config expected 200, got %d", w.Code)
+	}
+	var entries []types.ConfigEntry
+	json.NewDecoder(w.Body).Decode(&entries)
+	if len(entries) != 1 {
+		t.Errorf("expected 1 entry, got %d", len(entries))
+	}
+
+	// Delete config
+	req = httptest.NewRequest("DELETE", "/api/admin/config/budget", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("DELETE config expected 200, got %d", w.Code)
+	}
+}
+
+func TestConfigCRUD_Unauthenticated(t *testing.T) {
+	h := NewHandler(newMockStore(nil), &mockState{})
+	h.AuthSecret = "test-secret-key-min-32-chars!!!!!!!!"
+	r := chi.NewRouter()
+	r.Mount("/api/admin", h.adminRouter())
+
+	// Without auth token, all admin endpoints should return 401
+	for _, path := range []string{"/api/admin/config", "/api/admin/config/budget"} {
+		req := httptest.NewRequest("GET", path, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("GET %s expected 401, got %d", path, w.Code)
+		}
 	}
 }
 

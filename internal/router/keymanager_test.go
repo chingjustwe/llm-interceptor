@@ -67,6 +67,10 @@ func (m *mockStorage) GetSessionRequests(_ context.Context, _ string, _, _ int) 
 func (m *mockStorage) QueryRequests(_ context.Context, _ types.RequestFilter) ([]types.StoredRequest, error) {
 	return nil, nil
 }
+func (m *mockStorage) SaveConfig(_ context.Context, _ *types.ConfigEntry) error { return nil }
+func (m *mockStorage) GetConfig(_ context.Context, _ string) (*types.ConfigEntry, error) { return nil, nil }
+func (m *mockStorage) ListConfig(_ context.Context) ([]types.ConfigEntry, error) { return nil, nil }
+func (m *mockStorage) DeleteConfig(_ context.Context, _ string) error { return nil }
 func (m *mockStorage) Close() error { return nil }
 
 func TestKeyManager_GenerateAndValidate(t *testing.T) {

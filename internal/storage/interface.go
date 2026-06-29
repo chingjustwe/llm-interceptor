@@ -37,5 +37,11 @@ type Backend interface {
 	ListAPIKeys(ctx context.Context) ([]APIKey, error)
 	DisableAPIKey(ctx context.Context, id string) error
 
+	// Runtime configuration storage
+	SaveConfig(ctx context.Context, entry *types.ConfigEntry) error
+	GetConfig(ctx context.Context, key string) (*types.ConfigEntry, error)
+	ListConfig(ctx context.Context) ([]types.ConfigEntry, error)
+	DeleteConfig(ctx context.Context, key string) error
+
 	Close() error
 }

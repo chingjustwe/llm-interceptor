@@ -3,6 +3,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -228,4 +229,41 @@ func (c *Config) StoragePath() string {
 // Returns the original path if home directory lookup fails.
 func ExpandHome(path string) string {
 	return expandHome(path)
+}
+
+// OverlayRuntimeConfig applies runtime configuration entries on top of the
+// current Config. The entries are keyed by section name (e.g. "budget",
+// "rate-limit", "tool-policy", "cost-tracker") with JSON values that match
+// the corresponding config struct. Unknown keys are silently ignored.
+func (c *Config) OverlayRuntimeConfig(entries map[string]json.RawMessage) {
+	if v, ok := entries["budget"]; ok {
+		var b BudgetPluginConfig
+		if json.Unmarshal(v, &b) == nil {
+			c.Plugins.Budget = b
+		}
+	}
+	if v, ok := entries["rate-limit"]; ok {
+		var r RateLimitPluginConfig
+		if json.Unmarshal(v, &r) == nil {
+			c.Plugins.RateLimit = r
+		}
+	}
+	if v, ok := entries["tool-policy"]; ok {
+		var tp ToolPolicyPluginConfig
+		if json.Unmarshal(v, &tp) == nil {
+			c.Plugins.ToolPolicy = tp
+		}
+	}
+	if v, ok := entries["cost-tracker"]; ok {
+		var ct CostTrackerPluginConfig
+		if json.Unmarshal(v, &ct) == nil {
+			c.Plugins.CostTracker = ct
+		}
+	}
+	if v, ok := entries["router"]; ok {
+		var rt RouterConfig
+		if json.Unmarshal(v, &rt) == nil {
+			c.Router = rt
+		}
+	}
 }

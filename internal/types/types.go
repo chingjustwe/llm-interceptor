@@ -2,6 +2,8 @@
 // codebase, including request/response models, token usage, and storage types.
 package types
 
+import "encoding/json"
+
 // TokenUsage tracks token consumption for an LLM request, including cache
 // metrics separately from regular input/output tokens.
 type TokenUsage struct {
@@ -52,6 +54,16 @@ type StoredRequest struct {
 	Temperature     *float64 `json:"temperature,omitempty"`
 	TopP            *float64 `json:"top_p,omitempty"`
 	RequestParams   *string  `json:"request_params,omitempty"`
+}
+
+// ConfigEntry represents a single runtime configuration entry stored in the
+// database. Values are JSON-encoded for flexibility. The UpdatedBy field records
+// which admin user made the change, sourced from JWT claims.
+type ConfigEntry struct {
+	Key       string          `json:"key"`
+	Value     json.RawMessage `json:"value"`
+	UpdatedAt int64           `json:"updated_at"`
+	UpdatedBy string          `json:"updated_by"`
 }
 
 // RequestFilter defines the available filter parameters for querying stored
