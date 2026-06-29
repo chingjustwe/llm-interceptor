@@ -1,6 +1,6 @@
 # LLM Interceptor — Project Context
 
-Status: All 5 phases + Phase 2 UI Overhaul complete, 73 commits, 12 test files, all tests passing.
+Status: All 5 phases + Phase 4 Admin Console (auth, config CRUD, SSE hot-reload, audit log) + Phase 2 UI Overhaul complete, 76 commits, 14 test files, all tests passing.
 
 ## Project
 Local-first, open-source LLM gateway — transparent proxy, OTel observability,
@@ -19,7 +19,8 @@ protocol translation (Anthropic ↔ OpenAI), and a React SPA — in a single Go 
 cmd/llm-interceptor/        main.go (with embed.FS for SPA)
 internal/
 ├── config/                 YAML config loader
-├── types/                  Shared types (StoredRequest, TokenUsage, RequestFilter)
+├── auth/                   JWT auth, bcrypt, credential management
+├── types/                  Shared types (StoredRequest, TokenUsage, RequestFilter, ConfigEntry, AuditEntry)
 ├── plugin/                 Plugin interface + Dispatcher
 ├── proxy/                  HTTP proxy + SSE streaming relay
 ├── storage/                Backend interface + SQLite + PostgreSQL
@@ -41,6 +42,7 @@ ui/                         React SPA (Vite + TypeScript + Tailwind)
 | 4 | LLM Router, API key management (bcrypt), protocol translation | ✅ |
 | 5 | React SPA (Vite + Tailwind): requests, sessions, cost, keys, SSE live | ✅ |
 | 2.UI | UI Overhaul: Dashboard, Error Analysis, Model Analytics pages; enhanced Requests/Sessions/Cost pages; dark mode; recharts charts; reusable components (StatsCard, DataTable, PageHeader, FilterBar); backend timeseries/export/sessions-aggregate APIs | ✅ |
+| 4.C | Admin Console: JWT auth (bcrypt), config CRUD (runtime overlay via DB), SSE hot-reload (ConfigReloader), audit log, admin UI pages (login + config editor) | ✅ |
 
 ## Architecture Principles
 - **Plugin architecture** via Go interfaces (`plugin.Plugin`) — in-process, not out-of-process
@@ -59,8 +61,15 @@ type Plugin interface {
     OnResponse(ctx *ResponseContext) error
 }
 ```
+Plugins can optionally implement `ConfigReloader` to receive live config changes:
+```go
+type ConfigReloader interface {
+    ReloadConfig(key string, value json.RawMessage) error
+}
+```
 - `Dispatcher.ExecuteOnRequest` runs plugins in registration order; short-circuits on Block
 - `Dispatcher.ExecuteOnResponse` runs plugins in **reverse** order
+- `Dispatcher.ReloadConfig` broadcasts to all registered `ConfigReloader` plugins
 - `HookResult` fields: `Block bool`, `Reason string`, `StatusCode int`, `ErrorType string`, `RetryAfterSec int`
 
 ### Storage Backend (`internal/storage/interface.go`)
@@ -73,6 +82,12 @@ type Backend interface {
     GetAPIKeyByPrefix(ctx context.Context, prefix string) (*APIKey, error)
     ListAPIKeys(ctx context.Context) ([]APIKey, error)
     DisableAPIKey(ctx context.Context, id string) error
+    SaveConfig(ctx context.Context, entry *types.ConfigEntry) error
+    GetConfig(ctx context.Context, key string) (*types.ConfigEntry, error)
+    ListConfig(ctx context.Context) ([]types.ConfigEntry, error)
+    DeleteConfig(ctx context.Context, key string) error
+    SaveAuditEntry(ctx context.Context, entry *types.AuditEntry) error
+    QueryAuditEntries(ctx context.Context, limit, offset int) ([]types.AuditEntry, error)
     Close() error
 }
 ```
@@ -133,6 +148,12 @@ Plugin registration order in `main.go`:
 | POST | `/api/keys` | Generate API key (router mode only) |
 | GET | `/api/keys` | List API keys (router mode only) |
 | PATCH | `/api/keys/{id}/disable` | Disable API key (router mode only) |
+| POST | `/api/admin/login` | Admin login (returns JWT) |
+| GET | `/api/admin/config` | List runtime config entries |
+| GET | `/api/admin/config/{key}` | Get single config entry |
+| PUT | `/api/admin/config/{key}` | Upsert config entry (triggers plugin reload + audit) |
+| DELETE | `/api/admin/config/{key}` | Delete config entry (triggers audit) |
+| GET | `/api/admin/audit` | List audit log entries (pagination: limit, offset) |
 | GET | `/api/events` | SSE live event stream |
 | GET | `/health` | Health check |
 | `/*` | SPA static files (via `embed.FS`) | |
@@ -143,6 +164,8 @@ Plugin registration order in `main.go`:
 - Reusable layout components: StatsCard, DataTable, PageHeader, FilterBar (in `ui/src/components/`)
 - Dark mode toggle (persisted to localStorage, respects `prefers-color-scheme`)
 - SSE live events displayed as toast notifications
+- Admin console pages: Login, Config Editor (Budget/RateLimit/ToolPolicy/Pricing/Providers sections)
+- Auth: JWT token stored in localStorage, auto-redirect on 401 via useAuthedFetch hook
 - Dev server proxies `/api` to Go backend at `localhost:8080`
 - Production: built to `ui/dist/`, embedded via `//go:embed ui/dist/*`
 
@@ -172,6 +195,13 @@ Plugin registration order in `main.go`:
 - `translate.OpenAIToAnthropicResponse` maps tool_calls + finish_reason + cached/reasoning tokens
 - `translate/streaming.go` has `SSEEvent`, `StreamParser`/`StreamTranslator` interfaces with bidirectional implementations
 - Router has `Negotiate` method with `NegotiatedRoute` struct for protocol detection
+
+## Runtime Config Overlay
+- YAML file is the base configuration; DB entries in `runtime_config` table override sections at startup
+- `OverlayRuntimeConfig` method in `config.go` merges DB values into the YAML struct
+- Config sections keyed by name (e.g. "budget", "rate-limit", "tool-policy", "cost-tracker", "router")
+- `PUT /api/admin/config/{key}` triggers `Dispatcher.ReloadConfig` for live reload without restart
+- Config changes are recorded in `audit_log` table with old/new values and who performed the change
 
 ## Common Gotchas
 - **Module path is all lowercase**: `github.com/chingjustwe/llm-interceptor` — import paths use lowercase `llm-interceptor`
